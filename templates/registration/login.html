@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="container d-flex justify-content-center" style="margin-top: 80px;">
+    <div class="card-clean p-4" style="max-width: 420px; width: 100%;">
+
+        <h4 class="mb-4 text-center">ورود به حساب</h4>
+
+        {% if form.errors %}
+            <div class="alert alert-danger">
+                نام کاربری یا رمز عبور نادرست است.
+            </div>
+        {% endif %}
+
+        <form method="post">
+            {% csrf_token %}
+
+            <div class="mb-3">
+                <label class="form-label">نام کاربری</label>
+                {{ form.username }}
+            </div>
+
+            <div class="mb-3">
+                <label class="form-label">رمز عبور</label>
+                {{ form.password }}
+            </div>
+
+            <button type="submit" class="btn btn-primary w-100 mt-2">ورود</button>
+        </form>
+
+        <div class="mt-3 text-center">
+            <a href="{% url 'signup' %}">ساخت حساب جدید</a>
+        </div>
+    </div>
+</div>
+
+{% endblock %}

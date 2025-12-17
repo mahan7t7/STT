@@ -1,0 +1,78 @@
+<div class="card-clean p-3">
+
+    <h5 class="mb-3">لیست فایل‌های شما</h5>
+
+    <div class="table-responsive">
+
+        <table class="table" style="table-layout: fixed;">
+            <thead>
+            <tr>
+                <th style="width:20%;">مشخصات فایل</th>
+                <th style="width:14%;">مدل</th>
+                <th style="width:14%;">وضعیت</th>
+                <th style="width:44%;">متن</th>
+                <th style="width:8%;">عملیات</th>
+            </tr>
+            </thead>
+
+            <tbody id="file-list-tbody">
+
+            {% for file in files %}
+                {% include 'partials/row.html' with file=file %}
+            {% empty %}
+                <tr id="empty-row">
+                    <td colspan="5" class="text-center text-muted py-3">
+                        هنوز فایلی آپلود نکرده‌اید.
+                    </td>
+                </tr>
+            {% endfor %}
+
+            </tbody>
+        </table>
+
+    </div>
+
+    {% if files.has_other_pages %}
+    <div class="d-flex justify-content-center mt-3">
+
+        <nav>
+            <ul class="pagination">
+
+                {% if files.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" href="javascript:void(0)"
+                           onclick="fetchFiles({{ files.previous_page_number }})">قبلی</a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled"><span class="page-link">قبلی</span></li>
+                {% endif %}
+
+                {% for num in files.paginator.page_range %}
+                    {% if num == files.number %}
+                        <li class="page-item active">
+                            <span class="page-link">{{ num }}</span>
+                        </li>
+                    {% else %}
+                        <li class="page-item">
+                            <a class="page-link" href="javascript:void(0)"
+                               onclick="fetchFiles({{ num }})">{{ num }}</a>
+                        </li>
+                    {% endif %}
+                {% endfor %}
+
+                {% if files.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="javascript:void(0)"
+                           onclick="fetchFiles({{ files.next_page_number }})">بعدی</a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled"><span class="page-link">بعدی</span></li>
+                {% endif %}
+
+            </ul>
+        </nav>
+
+    </div>
+    {% endif %}
+
+</div>

@@ -1,0 +1,6 @@
+<div hx-get="{% url 'check_status_html' audio_file.id %}" 
+     hx-trigger="every 3s" 
+     hx-swap="outerHTML">
+    <span class="spinner-border spinner-border-sm text-primary"></span>
+    <span class="ms-1">در حال پردازش...</span>
+</div>

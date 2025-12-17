@@ -1,0 +1,64 @@
+<!-- core/templates/core/pdf_template.html -->
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 2cm;
+            @top-center {
+                content: "گزارش تبدیل متن - پروژه STT";
+                font-family: sans-serif;
+                font-size: 9pt;
+                color: #888;
+            }
+            @bottom-center {
+                content: "صفحه " counter(page);
+                font-family: sans-serif;
+                font-size: 9pt;
+            }
+        }
+        body {
+            font-family: "Tahoma", "Arial", sans-serif; /* فونت ساده برای اطمینان از نمایش */
+            direction: rtl;
+            text-align: justify;
+            line-height: 1.6;
+        }
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #333;
+            padding-bottom: 10px;
+            margin-bottom: 20px;
+        }
+        .meta-info {
+            background-color: #f0f0f0;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 0.9em;
+            margin-bottom: 20px;
+        }
+        .content {
+            white-space: pre-wrap; /* برای حفظ خطوط جدید متن */
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>متن استخراج شده</h1>
+        <h2>{{ title }}</h2>
+    </div>
+
+    <div class="meta-info">
+        <p><strong>شناسه فایل:</strong> {{ audio_file.id }}</p>
+        <p><strong>تاریخ آپلود:</strong> {{ audio_file.uploaded_at|date:"Y/m/d H:i" }}</p>
+        <p><strong>وضعیت:</strong> تکمیل شده</p>
+    </div>
+
+    <div class="content">
+        <h3>متن کامل:</h3>
+        <p>{{ text }}</p>
+    </div>
+</body>
+</html>

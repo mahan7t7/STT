@@ -1,0 +1,129 @@
+{% load jalali_tags %}
+
+<tr id="row-{{ file.id }}" data-file-id="{{ file.id }}" style="vertical-align: top;">
+    <td style="background: var(--card-bg); color: var(--text); width:34%;">
+        <strong>{{ file.title|default:"(بدون عنوان)" }}</strong><br>
+
+        {% if file.audio_file %}
+            <small style="color: var(--text); opacity:.7;">
+                {{ file.filename|clean_filename }}
+            </small><br>
+        {% endif %}
+
+        <small style="color: var(--text); opacity:.7;">
+            {{ file.created_at|to_jalali }}
+        </small>
+    </td>
+
+    <td style="background: var(--card-bg); color: var(--text); width:14%; vertical-align: top; padding-top: 4px;">
+
+    {% if file.model_name == "eboo" %}
+        <span class="badge bg-purple" 
+              style="background:#8b5cf6; padding:6px 10px; font-size:13px;">
+            Eboo
+        </span>
+
+    {% elif file.model_name == "vira" %}
+        <span class="badge bg-purple" 
+              style="background:#7c3aed; padding:6px 10px; font-size:13px;">
+            Vira
+        </span>
+
+    {% elif file.model_name == "scribe" %}
+        <span class="badge bg-purple"
+              style="background:#6d28d9; padding:6px 10px; font-size:13px;">
+            Scribe
+        </span>
+    {% endif %}
+
+</td>
+
+    <td style="background: var(--card-bg); color: var(--text); width:22%;">
+
+        {% if file.status == "uploading" %}
+            <div class="text-warning">در حال آپلود...</div>
+
+        {% elif file.status == "pending" %}
+            <div class="text-info">در صف انتظار...</div>
+            <div class="spinner-border spinner-border-sm mt-1"></div>
+
+        {% elif file.status == "processing" %}
+            <div class="text-primary">در حال پردازش...</div>
+            <div class="spinner-border spinner-border-sm mt-1"></div>
+
+        {% elif file.status == "completed" %}
+            <span class="badge bg-success">تکمیل شد</span>
+
+        {% elif file.status == "failed" %}
+            <span class="badge bg-danger">خطا</span>
+            <div class="text-danger small mt-1">{{ file.error_message|default:"مشکل نامشخص" }}</div>
+        {% endif %}
+    </td>
+
+    <td style="background: var(--card-bg); color: var(--text); width:22%;">
+
+        {% if file.status == "completed" %}
+            <div style="
+                max-height: 180px;
+                overflow-y: auto;
+                white-space: pre-wrap;
+                border: 1px solid var(--border);
+                background: var(--bg);
+                padding: 8px;
+                border-radius: 6px;
+            ">
+                {{ file.transcript_text|default:"متن خالی است" }}
+            </div>
+
+        {% elif file.status == "failed" %}
+            <div class="text-danger small">
+                {{ file.error_message|default:"خطای نامشخص" }}
+            </div>
+
+        {% else %}
+            <span style="color: var(--text); opacity:.7;" class="small">
+                متنی هنوز موجود نیست.
+            </span>
+        {% endif %}
+    </td>
+
+
+    <td style="background: var(--card-bg); color: var(--text); width:8%;">
+
+    {% if file.status == "completed" %}
+        <div class="dropdown mb-2">
+            <button class="btn btn-secondary btn-sm dropdown-toggle"
+                    type="button"
+                    data-bs-toggle="dropdown">
+                دانلود
+            </button>
+
+            <ul class="dropdown-menu">
+                <li>
+                    <a class="dropdown-item" href="{% url 'download_word' file.id %}">
+                        فایل Word
+                    </a>
+                </li>
+                <li>
+                    <a class="dropdown-item" href="{% url 'download_pdf' file.id %}">
+                        فایل PDF
+                    </a>
+                </li>
+                <li>
+                    <a class="dropdown-item" href="{% url 'download_txt' file.id %}">
+                        فایل TXT
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        <button class="btn btn-danger btn-sm btn-delete-file"
+                data-id="{{ file.id }}">
+            حذف
+        </button>
+    {% endif %}
+
+</td>
+
+
+</tr>

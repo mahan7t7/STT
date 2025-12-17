@@ -1,0 +1,233 @@
+{% extends 'base.html' %}
+{% load jalali_tags %}
+
+{% block content %}
+
+<div class="card-clean p-4 mb-4">
+    <h5 class="mb-3">آپلود فایل جدید</h5>
+
+    <form id="upload-form" method="post" enctype="multipart/form-data">
+        {% csrf_token %}
+        <div class="mb-3">
+            <label class="form-label">عنوان (اختیاری)</label>
+            <input type="text" class="form-control" name="title" id="title">
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">فایل صوتی</label>
+            <input class="form-control" type="file" name="audio_file" id="audio-file" required>
+        </div>
+
+        <div class="mb-3">
+            <label class="form-label">انتخاب مدل پردازش</label>
+            <select class="form-control" name="model_name" id="model-name" required>
+                <option value="eboo">Eboo</option>
+                <option value="vira">Vira</option>
+                <option value="scribe">Scribe</option>
+            </select>
+        </div>
+
+        <button type="submit" class="btn btn-primary px-4">شروع</button>
+    </form>
+</div>
+
+<div id="file-table-container">
+    {% include "partials/file_table_container.html" %}
+</div>
+
+<script>
+
+/* ==========================================
+   TEMP ROW (SKELETON + REAL TEXT)
+========================================== */
+function createSkeletonTempRow(tempId, title, fileName) {
+    return `
+<tr id="${tempId}" class="temp-row" data-temp-upload="1">
+
+    <!-- ستون اطلاعات فایل -->
+    <td style="width:32%;">
+        <div class="skeleton" style="height:18px; width:60%; margin-bottom:6px;"></div>
+        <div class="skeleton" style="height:14px; width:40%; margin-bottom:6px;"></div>
+        <div class="skeleton" style="height:14px; width:30%;"></div>
+    </td>
+
+    <!-- ستون وضعیت -->
+    <td style="width:18%; position:relative;">
+
+        <!-- لایه‌ی Skeleton -->
+        <div class="skeleton" style="height:18px; width:70%; margin-bottom:10px;"></div>
+
+        <!-- متن واقعی که باید دیده شود -->
+        <div style="position:absolute; top:0; left:0; right:0;
+                    color:var(--text); font-weight:bold; font-size:14px;">
+            در حال آپلود...
+        </div>
+
+        <div class="progress mt-2" style="height:6px;">
+            <div class="progress-bar progress-bar-striped progress-bar-animated upload-progress-bar"
+                 style="width:0%; background-color:#ffcc00;"></div>
+        </div>
+
+        <small class="upload-status-text" style="color: var(--text); opacity:.7;">0%</small>
+
+    </td>
+
+    <!-- ستون متن -->
+    <td style="width:34%;">
+        <div class="skeleton" style="height:16px; width:80%; margin-bottom:6px;"></div>
+        <div class="skeleton" style="height:16px; width:60%;"></div>
+    </td>
+
+    <!-- ستون عملیات -->
+    <td style="width:16%;">
+        <div class="skeleton" style="height:32px; width:70%;"></div>
+    </td>
+
+</tr>`;
+}
+
+
+
+/* ==========================================
+   UPLOAD HANDLER
+========================================== */
+document.getElementById("upload-form").addEventListener("submit", function(e){
+
+    e.preventDefault();
+
+    const fileInput = document.getElementById("audio-file");
+    if (!fileInput.files.length) return;
+
+    const tbody = document.getElementById("file-list-tbody");
+    const tempId = "temp-" + Date.now();
+
+    const fileName = fileInput.files[0].name;
+    const title = document.getElementById("title").value || "(بدون عنوان)";
+
+    const skeleton = createSkeletonTempRow(tempId, title, fileName);
+    tbody.insertAdjacentHTML("afterbegin", skeleton);
+
+    const emptyRow = document.getElementById("empty-row");
+    if (emptyRow) emptyRow.remove();
+
+    const formData = new FormData(this);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "{% url 'upload_file' %}");
+
+    xhr.upload.addEventListener("progress", (e)=>{
+        if (e.lengthComputable){
+            const percent = Math.round((e.loaded / e.total) * 100);
+            document.querySelector(`#${tempId} .upload-progress-bar`).style.width = percent + "%";
+            document.querySelector(`#${tempId} .upload-status-text`).textContent = percent + "%";
+        }
+    });
+
+    xhr.onload = function(){
+        const tr = document.getElementById(tempId);
+
+        if (xhr.status === 200){
+            const data = JSON.parse(xhr.responseText);
+            const fileId = data.file_id;
+
+            fetch("{% url 'update_row' 0 %}".replace("0", fileId))
+                .then(r=>r.text())
+                .then(html=>{
+                    if (tr) tr.outerHTML = html;
+                });
+
+            document.getElementById("upload-form").reset();
+        }
+        else {
+            if (tr) tr.remove();
+            alert("خطا در آپلود");
+        }
+    };
+
+    xhr.send(formData);
+});
+
+
+
+/* ==========================================
+   AJAX Pagination
+========================================== */
+function fetchFiles(page=1){
+    fetch(`{% url 'get_files' %}?page=${page}`)
+        .then(r=>r.text())
+        .then(html=>{
+            document.getElementById("file-table-container").innerHTML = html;
+            history.replaceState({page:page}, "", window.location.pathname);
+        });
+}
+
+
+
+/* ==========================================
+   Polling (Auto Row Update)
+========================================== */
+let pollingPaused = false;
+let pollingLocked = false;
+
+function pollRows(){
+    if (pollingPaused || pollingLocked) return;
+    pollingLocked = true;
+
+    const rows = document.querySelectorAll("tr[data-file-id]");
+
+    const p = [];
+    rows.forEach(row=>{
+        if (row.dataset.tempUpload === "1") return;
+
+        let id = row.dataset.fileId;
+
+        p.push(
+            fetch("{% url 'update_row' 0 %}".replace("0", id))
+            .then(r=>r.text())
+            .then(html=>{
+                const current = document.getElementById("row-" + id);
+                if (current) current.outerHTML = html;
+            })
+        );
+    });
+
+    Promise.all(p).finally(()=> pollingLocked = false);
+}
+
+setInterval(pollRows, 3000);
+
+
+
+/* ==========================================
+   Pause Polling When Dropdown Opens
+========================================== */
+document.addEventListener("show.bs.dropdown", ()=> pollingPaused = true);
+document.addEventListener("hide.bs.dropdown", ()=> pollingPaused = false);
+
+
+
+/* ==========================================
+   Delete File
+========================================== */
+document.addEventListener("click", function(e){
+    if (e.target.matches(".btn-delete-file")){
+        const id = e.target.dataset.id;
+
+        if (!confirm("آیا حذف شود؟")) return;
+
+        fetch("{% url 'delete_file' 0 %}".replace("0", id), {
+            method: "DELETE",
+            headers: {"X-CSRFToken": "{{ csrf_token }}"},
+        })
+        .then(r=>r.json())
+        .then(d=>{
+            if (d.success){
+                const row = document.getElementById("row-" + id);
+                if (row) row.remove();
+            }
+        });
+    }
+});
+
+</script>
+
+{% endblock %}
