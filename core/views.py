@@ -122,9 +122,14 @@ def upload_file(request):
     form = AudioUploadForm(request.POST, request.FILES, user=request.user)
 
     if not form.is_valid():
+        messages = []
+        for field, errors in form.errors.items():
+            for err in errors:
+                messages.append(str(err))
+
         return JsonResponse({
             "success": False,
-            "errors": form.errors
+            "message": " / ".join(messages)
         }, status=400)
 
     # Save file (status default = uploading)

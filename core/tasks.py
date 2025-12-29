@@ -5,6 +5,15 @@ from celery import shared_task
 from .models import AudioFile
 from .services import EbooService, ScribeService, ViraService
 
+HUMAN_ERRORS = {
+    "service": "خطا در ارتباط با سرویس پردازش",
+    "timeout": "پردازش فایل بیش از حد طول کشید",
+    "empty": "متنی از فایل استخراج نشد",
+    "unknown": "خطای نامشخص در پردازش فایل",
+}
+
+
+
 logger = logging.getLogger('core')
 
 
@@ -85,8 +94,15 @@ def process_audio_file(self, file_id):
             or "exception" in result
         ):
             logger.error(f"[SERVICE ERROR] {result}")
+
             audio_file.status = AudioFile.Status.FAILED
-            audio_file.error_message = result.get("error") or result.get("exception")
+
+            # always HUMAN text
+            if "timeout" in str(result).lower():
+                audio_file.error_message = HUMAN_ERRORS["timeout"]
+            else:
+                audio_file.error_message = HUMAN_ERRORS["service"]
+
             audio_file.save()
             return
 
