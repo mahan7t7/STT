@@ -4,7 +4,7 @@ import os
 import io
 import textwrap
 
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth import login
 from django.http import (
@@ -74,20 +74,19 @@ def get_safe_filename(audio_file, ext):
 # ---------------------------------------------------------
 
 def landing(request):
-    """Redirects authenticated users to dashboard."""
     if request.user.is_authenticated:
-        return render(request, "core/dashboard.html")
+        return redirect("dashboard")
     return render(request, "core/landing.html")
 
 
+
 def signup(request):
-    """Standard Django signup."""
     if request.method == "POST":
         form = SignUpForm(request.POST)
         if form.is_valid():
             user = form.save()
             login(request, user)
-            return render(request, "core/dashboard.html")
+            return redirect("dashboard")  # ✅ مهم
     else:
         form = SignUpForm()
 

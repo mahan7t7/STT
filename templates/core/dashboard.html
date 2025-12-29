@@ -19,13 +19,30 @@
         </div>
 
         <div class="mb-3">
-            <label class="form-label">انتخاب مدل پردازش</label>
-            <select class="form-control" name="model_name" id="model-name" required>
-                <option value="eboo">Eboo</option>
-                <option value="vira">Vira</option>
-                <option value="scribe">Scribe</option>
-            </select>
+            <label class="form-label d-block">انتخاب مدل پردازش</label>
+
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="model_name" id="model-eboo" value="eboo" checked required>
+                <label class="form-check-label" for="model-eboo">
+                    Eboo
+                </label>
+            </div>
+
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="model_name" id="model-vira" value="vira">
+                <label class="form-check-label" for="model-vira">
+                    Vira
+                </label>
+            </div>
+
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="model_name" id="model-scribe" value="scribe">
+                <label class="form-check-label" for="model-scribe">
+                    Scribe
+                </label>
+            </div>
         </div>
+
 
         <button type="submit" class="btn btn-primary px-4">شروع</button>
     </form>
