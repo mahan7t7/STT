@@ -119,7 +119,23 @@ def upload_file(request):
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid request")
 
-    form = AudioUploadForm(request.POST, request.FILES, user=request.user)
+    # -------------------------------------------------
+    #  1. Create DB row FIRST (refresh-safe)
+    # -------------------------------------------------
+    audio = AudioFile.objects.create(
+        user=request.user,
+        status=AudioFile.Status.UPLOADING
+    )
+
+    # -------------------------------------------------
+    #  2. Bind form to existing instance
+    # -------------------------------------------------
+    form = AudioUploadForm(
+        request.POST,
+        request.FILES,
+        instance=audio,
+        user=request.user
+    )
 
     if not form.is_valid():
         messages = []
@@ -127,13 +143,17 @@ def upload_file(request):
             for err in errors:
                 messages.append(str(err))
 
+        audio.status = AudioFile.Status.FAILED
+        audio.error_message = " / ".join(messages)
+        audio.save()
+
         return JsonResponse({
             "success": False,
-            "message": " / ".join(messages)
+            "message": audio.error_message
         }, status=400)
 
     # -------------------------------------------------
-    # Save file (status default = uploading)
+    #  3. Save uploaded file on SAME row
     # -------------------------------------------------
     audio = form.save()
 
@@ -141,11 +161,10 @@ def upload_file(request):
     # Detect VIDEO file (ONLY detection here)
     # -------------------------------------------------
     filename = audio.audio_file.name.lower()
-
     video_exts = (".mp4", ".mkv", ".avi", ".mov", ".webm")
 
     audio.is_video = filename.endswith(video_exts)
-    audio.save()
+    audio.save(update_fields=["is_video"])
 
     # -------------------------------------------------
     # Queue logic — one active job per user
@@ -156,23 +175,15 @@ def upload_file(request):
             AudioFile.Status.PENDING,
             AudioFile.Status.PROCESSING
         ]
-    ).exists()
+    ).exclude(id=audio.id).exists()
 
-    if user_has_active_job:
-        # Another job is running → wait
-        audio.status = AudioFile.Status.PENDING
-        audio.save()
+    audio.status = AudioFile.Status.PENDING
+    audio.save(update_fields=["status"])
 
-    else:
-        # User is free → start processing
-        audio.status = AudioFile.Status.PENDING
-        audio.save()
-
+    if not user_has_active_job:
         result = process_audio_file.delay(audio.id)
-
-        # save Celery task_id (for revoke on delete)
         audio.task_id = result.id
-        audio.save()
+        audio.save(update_fields=["task_id"])
 
     return JsonResponse({
         "success": True,
