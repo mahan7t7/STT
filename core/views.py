@@ -113,14 +113,24 @@ def dashboard(request):
 # Upload (AJAX)
 # ---------------------------------------------------------
 
+
 @login_required
 def upload_file(request):
-    """AJAX Upload — ensures each user can process only ONE file at a time."""
+    """
+    AJAX Upload (Refresh-safe)
+
+    Flow:
+    1) Create DB row immediately (status=UPLOADING)
+    2) Bind form to the same instance
+    3) If upload interrupted → mark FAILED with human message
+    4) If success → move to PENDING / PROCESSING queue
+    """
+
     if request.method != "POST":
         return HttpResponseBadRequest("Invalid request")
 
     # -------------------------------------------------
-    #  1. Create DB row FIRST (refresh-safe)
+    # 1. Create DB row FIRST (critical for refresh)
     # -------------------------------------------------
     audio = AudioFile.objects.create(
         user=request.user,
@@ -128,7 +138,7 @@ def upload_file(request):
     )
 
     # -------------------------------------------------
-    #  2. Bind form to existing instance
+    # 2. Bind form to EXISTING instance
     # -------------------------------------------------
     form = AudioUploadForm(
         request.POST,
@@ -137,37 +147,41 @@ def upload_file(request):
         user=request.user
     )
 
+    # -------------------------------------------------
+    # 3. Validation failed (refresh / cancel / broken upload)
+    # -------------------------------------------------
     if not form.is_valid():
-        messages = []
-        for field, errors in form.errors.items():
-            for err in errors:
-                messages.append(str(err))
-
         audio.status = AudioFile.Status.FAILED
-        audio.error_message = " / ".join(messages)
-        audio.save()
+        audio.error_message = (
+            "آپلود ناقص بود. "
+            "احتمالاً صفحه رفرش شده یا ارتباط قطع شده است."
+        )
+        audio.save(update_fields=["status", "error_message"])
 
-        return JsonResponse({
-            "success": False,
-            "message": audio.error_message
-        }, status=400)
+        return JsonResponse(
+            {
+                "success": False,
+                "message": audio.error_message
+            },
+            status=400
+        )
 
     # -------------------------------------------------
-    #  3. Save uploaded file on SAME row
+    # 4. Save uploaded file on SAME row
     # -------------------------------------------------
-    audio = form.save()
+    audio = form.save(commit=False)
 
     # -------------------------------------------------
-    # Detect VIDEO file (ONLY detection here)
+    # 5. Detect VIDEO file
     # -------------------------------------------------
-    filename = audio.audio_file.name.lower()
+    filename = (audio.audio_file.name or "").lower()
     video_exts = (".mp4", ".mkv", ".avi", ".mov", ".webm")
-
     audio.is_video = filename.endswith(video_exts)
-    audio.save(update_fields=["is_video"])
+
+    audio.save()
 
     # -------------------------------------------------
-    # Queue logic — one active job per user
+    # 6. Queue logic (one active job per user)
     # -------------------------------------------------
     user_has_active_job = AudioFile.objects.filter(
         user=request.user,
@@ -181,15 +195,19 @@ def upload_file(request):
     audio.save(update_fields=["status"])
 
     if not user_has_active_job:
-        result = process_audio_file.delay(audio.id)
-        audio.task_id = result.id
+        task = process_audio_file.delay(audio.id)
+        audio.task_id = task.id
         audio.save(update_fields=["task_id"])
 
-    return JsonResponse({
-        "success": True,
-        "file_id": audio.id
-    })
-
+    # -------------------------------------------------
+    # 7. Success response
+    # -------------------------------------------------
+    return JsonResponse(
+        {
+            "success": True,
+            "file_id": audio.id
+        }
+    )
 
 # ---------------------------------------------------------
 # AJAX — File list refresh for polling

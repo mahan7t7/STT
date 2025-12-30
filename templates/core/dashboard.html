@@ -53,12 +53,30 @@
 
 <script>
 /* ==========================================
-   TEMP ROW (SKELETON + REAL TEXT)
+   UPLOAD REFRESH WARNING (GLOBAL)
 ========================================== */
-function createSkeletonTempRow(tempId, title, fileName) {
+let uploadInProgress = false;
+
+function markUploadStart() {
+    uploadInProgress = true;
+}
+
+function markUploadEnd() {
+    uploadInProgress = false;
+}
+
+window.addEventListener("beforeunload", function (e) {
+    if (!uploadInProgress) return;
+    e.preventDefault();
+    e.returnValue = "";
+});
+
+/* ==========================================
+   TEMP ROW (SKELETON)
+========================================== */
+function createSkeletonTempRow(tempId) {
     return `
 <tr id="${tempId}" class="temp-row" data-temp-upload="1">
-
     <td style="width:32%;">
         <div class="skeleton" style="height:18px; width:60%; margin-bottom:6px;"></div>
         <div class="skeleton" style="height:14px; width:40%; margin-bottom:6px;"></div>
@@ -89,14 +107,13 @@ function createSkeletonTempRow(tempId, title, fileName) {
     <td style="width:16%;">
         <div class="skeleton" style="height:32px; width:70%;"></div>
     </td>
-
 </tr>`;
 }
 
 /* ==========================================
-   UPLOAD HANDLER
+   UPLOAD HANDLER (FIXED)
 ========================================== */
-document.getElementById("upload-form").addEventListener("submit", function(e){
+document.getElementById("upload-form").addEventListener("submit", function (e) {
     e.preventDefault();
 
     const fileInput = document.getElementById("audio-file");
@@ -105,37 +122,42 @@ document.getElementById("upload-form").addEventListener("submit", function(e){
     const tbody = document.getElementById("file-list-tbody");
     const tempId = "temp-" + Date.now();
 
-    const title = document.getElementById("title").value || "(بدون عنوان)";
-    const skeleton = createSkeletonTempRow(tempId, title);
-    tbody.insertAdjacentHTML("afterbegin", skeleton);
+    tbody.insertAdjacentHTML("afterbegin", createSkeletonTempRow(tempId));
 
     const emptyRow = document.getElementById("empty-row");
     if (emptyRow) emptyRow.remove();
 
     const formData = new FormData(this);
     const xhr = new XMLHttpRequest();
+
+    /* ✅ IMPORTANT */
+    markUploadStart();
+
     xhr.open("POST", "{% url 'upload_file' %}");
 
-    xhr.upload.addEventListener("progress", (e)=>{
-        if (e.lengthComputable){
-            const percent = Math.round((e.loaded / e.total) * 100);
-            const progressBar = document.querySelector(`#${tempId} .upload-progress-bar`);
-            const statusText = document.querySelector(`#${tempId} .upload-status-text`);
-            if (progressBar) progressBar.style.width = percent + "%";
-            if (statusText) statusText.textContent = percent + "%";
-        }
-    });
+    xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
 
-    xhr.onload = function(){
+        const percent = Math.round((e.loaded / e.total) * 100);
+        const bar = document.querySelector(`#${tempId} .upload-progress-bar`);
+        const text = document.querySelector(`#${tempId} .upload-status-text`);
+
+        if (bar) bar.style.width = percent + "%";
+        if (text) text.textContent = percent + "%";
+    };
+
+    xhr.onload = function () {
+        markUploadEnd();
+
         const tr = document.getElementById(tempId);
 
-        if (xhr.status === 200){
+        if (xhr.status === 200) {
             const data = JSON.parse(xhr.responseText);
             const fileId = data.file_id;
 
             fetch("{% url 'update_row' 0 %}".replace("0", fileId))
-                .then(r=>r.text())
-                .then(html=>{
+                .then(r => r.text())
+                .then(html => {
                     if (tr) tr.outerHTML = html;
                 });
 
@@ -146,25 +168,32 @@ document.getElementById("upload-form").addEventListener("submit", function(e){
         }
     };
 
+    xhr.onerror = xhr.onabort = function () {
+        markUploadEnd();
+        const tr = document.getElementById(tempId);
+        if (tr) tr.remove();
+        alert("آپلود قطع شد");
+    };
+
     xhr.send(formData);
 });
 
 /* ==========================================
-   AJAX Pagination 
+   AJAX Pagination
 ========================================== */
 let isFetchingFiles = false;
 
-function fetchFiles(page=1){
+function fetchFiles(page = 1) {
     if (isFetchingFiles) return;
     isFetchingFiles = true;
 
     window.disableRowLock = true;
 
     fetch(`{% url 'get_files' %}?page=${page}`)
-        .then(r=>r.text())
-        .then(html=>{
+        .then(r => r.text())
+        .then(html => {
             document.getElementById("file-table-container").innerHTML = html;
-            history.replaceState({page}, "", window.location.pathname);
+            history.replaceState({ page }, "", window.location.pathname);
         })
         .finally(() => {
             window.disableRowLock = false;
@@ -173,27 +202,21 @@ function fetchFiles(page=1){
 }
 
 /* ==========================================
-    ROW-LEVEL POLLING LOCK (بهبود یافته)
+   ROW-LEVEL POLLING LOCK
 ========================================== */
 const lockedRows = new Set();
 
-/* Lock when mouse is over transcript or download */
 document.addEventListener("mouseover", e => {
     if (window.disableRowLock) return;
-
     const el = e.target.closest("[data-lock-refresh='true']");
     if (!el) return;
-
-    const fileId = el.dataset.fileId;
-    if (fileId) lockedRows.add(fileId);
+    lockedRows.add(el.dataset.fileId);
 });
 
 document.addEventListener("mouseout", e => {
     const el = e.target.closest("[data-lock-refresh='true']");
     if (!el) return;
-
-    const fileId = el.dataset.fileId;
-    if (fileId) lockedRows.delete(fileId);
+    lockedRows.delete(el.dataset.fileId);
 });
 
 /* ==========================================
@@ -201,21 +224,19 @@ document.addEventListener("mouseout", e => {
 ========================================== */
 let pollingLocked = false;
 
-function pollRows(){
+function pollRows() {
     if (pollingLocked) return;
     pollingLocked = true;
 
-    document.querySelectorAll("tr[data-file-id]").forEach(row=>{
+    document.querySelectorAll("tr[data-file-id]").forEach(row => {
         if (row.dataset.tempUpload === "1") return;
 
         const fileId = row.dataset.fileId;
-
-        /* ✅ If this row is locked, skip it */
         if (lockedRows.has(fileId)) return;
 
         fetch("{% url 'update_row' 0 %}".replace("0", fileId))
-            .then(r=>r.text())
-            .then(html=>{
+            .then(r => r.text())
+            .then(html => {
                 const current = document.getElementById("row-" + fileId);
                 if (current) current.outerHTML = html;
             });
@@ -227,39 +248,38 @@ function pollRows(){
 setInterval(pollRows, 3000);
 
 /* ==========================================
-   Pause Polling on Bootstrap Dropdown (keep)
-========================================== */
-/* ==========================================
    Delete File
 ========================================== */
-document.addEventListener("click", function(e){
-    if (e.target.matches(".btn-delete-file")){
-        const id = e.target.dataset.id;
-        if (!confirm("آیا حذف شود؟")) return;
+document.addEventListener("click", function (e) {
+    if (!e.target.matches(".btn-delete-file")) return;
 
-        fetch("{% url 'delete_file' 0 %}".replace("0", id), {
-            method: "DELETE",
-            headers: {"X-CSRFToken": "{{ csrf_token }}"},
-        })
-        .then(r=>r.json())
-        .then(d=>{
-            if (d.success){
+    const id = e.target.dataset.id;
+    if (!confirm("آیا حذف شود؟")) return;
+
+    fetch("{% url 'delete_file' 0 %}".replace("0", id), {
+        method: "DELETE",
+        headers: { "X-CSRFToken": "{{ csrf_token }}" },
+    })
+        .then(r => r.json())
+        .then(d => {
+            if (d.success) {
                 const row = document.getElementById("row-" + id);
                 if (row) row.remove();
             }
         });
-    }
 });
 
+/* ==========================================
+   Pagination Click
+========================================== */
+document.addEventListener("click", function (e) {
+    if (!e.target.classList.contains("page-link")) return;
+    e.preventDefault();
 
-document.addEventListener("click", function(e){
-    if (e.target.matches(".page-link")){
-        e.preventDefault();
-        const page = e.target.dataset.page;
-        if (page) fetchFiles(page);
-    }
+    const page = e.target.dataset.page;
+    if (page) fetchFiles(page);
 });
-
 </script>
+
 
 {% endblock %}
