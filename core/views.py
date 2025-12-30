@@ -132,28 +132,45 @@ def upload_file(request):
             "message": " / ".join(messages)
         }, status=400)
 
+    # -------------------------------------------------
     # Save file (status default = uploading)
+    # -------------------------------------------------
     audio = form.save()
 
-    # --------- IMPORTANT LOGIC ----------
-    # Does this user already have an active job?
+    # -------------------------------------------------
+    # Detect VIDEO file (ONLY detection here)
+    # -------------------------------------------------
+    filename = audio.audio_file.name.lower()
+
+    video_exts = (".mp4", ".mkv", ".avi", ".mov", ".webm")
+
+    audio.is_video = filename.endswith(video_exts)
+    audio.save()
+
+    # -------------------------------------------------
+    # Queue logic — one active job per user
+    # -------------------------------------------------
     user_has_active_job = AudioFile.objects.filter(
         user=request.user,
-        status__in=[AudioFile.Status.PENDING, AudioFile.Status.PROCESSING]
+        status__in=[
+            AudioFile.Status.PENDING,
+            AudioFile.Status.PROCESSING
+        ]
     ).exists()
 
     if user_has_active_job:
-        # Another job is running → this file must wait
+        # Another job is running → wait
         audio.status = AudioFile.Status.PENDING
         audio.save()
 
     else:
-        # User is free → start processing immediately
+        # User is free → start processing
         audio.status = AudioFile.Status.PENDING
         audio.save()
+
         result = process_audio_file.delay(audio.id)
 
-        # save Celery task_id to enable revoke on delete
+        # save Celery task_id (for revoke on delete)
         audio.task_id = result.id
         audio.save()
 
@@ -161,6 +178,7 @@ def upload_file(request):
         "success": True,
         "file_id": audio.id
     })
+
 
 # ---------------------------------------------------------
 # AJAX — File list refresh for polling

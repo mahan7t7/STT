@@ -3,6 +3,8 @@ import json
 import time
 import requests
 import os
+import subprocess
+import uuid
 from django.conf import settings
 from django.contrib.sites.models import Site
 
@@ -120,7 +122,7 @@ class ScribeService:
             with open(file_path, "rb") as f:
                 files = {"files": (os.path.basename(file_path), f)}
                 print(f"[SCRIBE] Uploading file: {file_path}")
-                upload = requests.post(cls.STORAGE_URL, headers=headers, files=files, timeout=120)
+                upload = requests.post(cls.STORAGE_URL, headers=headers, files=files, timeout=900)
         except Exception as e:
             return {"exception": f"Upload error: {e}"}
 
@@ -154,7 +156,7 @@ class ScribeService:
         }
 
         try:
-            gen_resp = requests.post(cls.GENERATE_URL, headers=headers, json=payload, timeout=90)
+            gen_resp = requests.post(cls.GENERATE_URL, headers=headers, json=payload, timeout=900)
         except Exception as e:
             return {"exception": f"Generate error: {e}"}
 
@@ -171,7 +173,7 @@ class ScribeService:
 
         for attempt in range(60): 
             try:
-                poll_resp = requests.get(poll_url, headers=headers, timeout=30)
+                poll_resp = requests.get(poll_url, headers=headers, timeout=900)
                 if poll_resp.status_code == 200:
                     js = poll_resp.json()
                     status = js.get("status")
@@ -259,7 +261,7 @@ class ViraService:
         }
 
         try:
-            r = requests.post(ViraService.URL, data=data, files=files, headers=headers, timeout=90)
+            r = requests.post(ViraService.URL, data=data, files=files, headers=headers, timeout=900)
         except Exception as e:
             return {"exception": f"Request error: {str(e)}"}
 
@@ -286,3 +288,41 @@ class ViraService:
                     text = ai.get("text")
 
         return {"text": text or ""}
+
+
+
+
+
+
+class MediaService:
+    @staticmethod
+    def extract_audio(video_path: str) -> str:
+        """
+        Extracts WAV audio from video using ffmpeg
+        Output:
+          - mono
+          - 16kHz
+          - wav
+        """
+        base, _ = os.path.splitext(video_path)
+        output_path = f"{base}_{uuid.uuid4().hex[:8]}.wav"
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", video_path,
+            "-vn",
+            "-ac", "1",
+            "-ar", "16000",
+            "-acodec", "pcm_s16le",
+            output_path
+        ]
+
+        subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+
+        return output_path

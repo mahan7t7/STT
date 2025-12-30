@@ -50,6 +50,11 @@ class AudioFile(models.Model):
         upload_to='uploads/audio/',
         verbose_name="فایل صوتی"
     )
+    
+    is_video = models.BooleanField(
+        default=False,
+        verbose_name="فایل ویدیویی است؟"
+    )
 
     # Status of processing
     status = models.CharField(

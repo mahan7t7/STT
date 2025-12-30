@@ -1,11 +1,13 @@
 # core/tasks.py
 
 import logging
+import os
 from celery import shared_task
 from .models import AudioFile
-from .services import EbooService, ScribeService, ViraService
+from .services import EbooService, ScribeService, ViraService, MediaService
 
 HUMAN_ERRORS = {
+    "video": "خطا در استخراج صدا از فایل ویدیویی.",
     "service": "خطا در ارتباط با سرویس پردازش",
     "timeout": "پردازش فایل بیش از حد طول کشید",
     "empty": "متنی از فایل استخراج نشد",
@@ -20,20 +22,22 @@ logger = logging.getLogger('core')
 @shared_task(bind=True)
 def process_audio_file(self, file_id):
     """
-    Celery task to process an uploaded audio file.
+    Celery task to process an uploaded audio/video file.
 
-    Works with 3 models:
-    - eboo
-    - scribe
-    - vira
+    Supports:
+    - Audio files
+    - Video → extract audio → STT
 
-    Keeps:
+    Features:
     - User-level queue
-    - Cancellation support
-    - Error handling
+    - Human-readable errors
+    - Safe error handling
     """
 
     logger.info(f"[TASK START] file_id={file_id}")
+
+    audio_file = None
+    extracted_audio_path = None
 
     try:
         # ---------------------------------------------------------
@@ -42,27 +46,38 @@ def process_audio_file(self, file_id):
         try:
             audio_file = AudioFile.objects.get(id=file_id)
         except AudioFile.DoesNotExist:
-            logger.error(f"[ERROR] AudioFile {file_id} not found in DB.")
+            logger.error(f"[ERROR] AudioFile {file_id} not found.")
             return
 
         # ---------------------------------------------------------
-        # Track Celery task ID (for revoke)
+        # Track Celery task ID
         # ---------------------------------------------------------
         audio_file.task_id = self.request.id
-        audio_file.save()
-
-        # ---------------------------------------------------------
-        # Set status → PROCESSING
-        # ---------------------------------------------------------
         audio_file.status = AudioFile.Status.PROCESSING
         audio_file.save()
         logger.info(f"[STATUS] File {file_id} → PROCESSING")
 
         # ---------------------------------------------------------
-        # Select service based on model_name
+        # Resolve file path (video → audio if needed)
+        # ---------------------------------------------------------
+        file_path = audio_file.audio_file.path
+
+        if audio_file.is_video:
+            logger.info(f"[VIDEO] Extracting audio from video for file {file_id}")
+            try:
+                extracted_audio_path = MediaService.extract_audio(file_path)
+                file_path = extracted_audio_path
+            except Exception as ve:
+                logger.error(f"[VIDEO ERROR] {ve}", exc_info=True)
+                audio_file.status = AudioFile.Status.FAILED
+                audio_file.error_message = HUMAN_ERRORS["video"]
+                audio_file.save()
+                return
+
+        # ---------------------------------------------------------
+        # Select AI service
         # ---------------------------------------------------------
         model = audio_file.model_name or "eboo"
-        file_path = audio_file.audio_file.path
         logger.debug(f"[AI SERVICE] model={model} file={file_path}")
 
         try:
@@ -81,23 +96,18 @@ def process_audio_file(self, file_id):
         except Exception as api_err:
             logger.error(f"[AI ERROR] {api_err}", exc_info=True)
             audio_file.status = AudioFile.Status.FAILED
-            audio_file.error_message = "خطا در ارتباط با سرویس پردازش صوت."
+            audio_file.error_message = HUMAN_ERRORS["service"]
             audio_file.save()
             return
 
         # ---------------------------------------------------------
-        # Validate service result
+        # Validate result
         # ---------------------------------------------------------
-        if (
-            not result
-            or "error" in result
-            or "exception" in result
-        ):
+        if not result or "error" in result or "exception" in result:
             logger.error(f"[SERVICE ERROR] {result}")
 
             audio_file.status = AudioFile.Status.FAILED
 
-            # always HUMAN text
             if "timeout" in str(result).lower():
                 audio_file.error_message = HUMAN_ERRORS["timeout"]
             else:
@@ -109,7 +119,7 @@ def process_audio_file(self, file_id):
         # ---------------------------------------------------------
         # Extract final text
         # ---------------------------------------------------------
-        final_text = result.get("text", "").strip()
+        final_text = (result.get("text") or "").strip()
         if not final_text:
             final_text = "متنی استخراج نشد."
 
@@ -128,17 +138,24 @@ def process_audio_file(self, file_id):
             f"[CRITICAL FAILURE] file_id={file_id} err={e}",
             exc_info=True
         )
-        try:
-            f = AudioFile.objects.get(id=file_id)
-            f.status = AudioFile.Status.FAILED
-            f.error_message = "خطای فنی غیرمنتظره در سرور."
-            f.save()
-        except Exception:
-            logger.critical("Database unreachable during failure recovery.")
+        if audio_file:
+            audio_file.status = AudioFile.Status.FAILED
+            audio_file.error_message = HUMAN_ERRORS["unknown"]
+            audio_file.save()
+
+    finally:
+        # ---------------------------------------------------------
+        # Cleanup extracted temp audio
+        # ---------------------------------------------------------
+        if extracted_audio_path and os.path.exists(extracted_audio_path):
+            try:
+                os.remove(extracted_audio_path)
+                logger.info(f"[CLEANUP] Temp audio removed: {extracted_audio_path}")
+            except Exception as ce:
+                logger.warning(f"[CLEANUP ERROR] {ce}")
 
     # ======================================================================
     # USER-LEVEL QUEUE
-    # Auto-start next pending file for the same user
     # ======================================================================
     try:
         next_file = AudioFile.objects.filter(
