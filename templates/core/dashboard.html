@@ -47,11 +47,50 @@
     </form>
 </div>
 
+<!-- ===============================
+     IMPORT FROM URL
+================================ -->
+<div class="card-clean p-4 mb-4">
+    <h5 class="mb-3">Import از لینک</h5>
+
+    <div class="input-group">
+        <input type="url" id="import-url" class="form-control"
+               placeholder="https://example.com/page-with-audio">
+        <button class="btn btn-outline-primary" type="button" onclick="startImport()">
+            بررسی لینک
+        </button>
+    </div>
+
+    <div id="import-status" class="mt-3 text-muted"></div>
+    <div id="import-preview" class="mt-3"></div>
+</div>
+
+
+
+
+
 <div id="file-table-container">
     {% include "partials/file_table_container.html" %}
 </div>
 
 <script>
+
+    function getCSRFToken() {
+    const name = "csrftoken=";
+    const decodedCookie = decodeURIComponent(document.cookie);
+    const parts = decodedCookie.split(';');
+    for (let i = 0; i < parts.length; i++) {
+        let c = parts[i].trim();
+        if (c.startsWith(name)) {
+            return c.substring(name.length);
+        }
+    }
+    return "";
+}
+
+
+
+
 /* ==========================================
    UPLOAD REFRESH WARNING (GLOBAL)
 ========================================== */
@@ -279,7 +318,133 @@ document.addEventListener("click", function (e) {
     const page = e.target.dataset.page;
     if (page) fetchFiles(page);
 });
+
+
+
+/* ==========================================
+   IMPORT URL (MINIMAL ADDON)
+========================================== */
+
+let importBatchId = null;
+let importPollTimer = null;
+
+window.startImport = function (){
+    const urlInput = document.getElementById("import-url");
+    const statusBox = document.getElementById("import-status");
+    const previewBox = document.getElementById("import-preview");
+
+    const url = urlInput.value.trim();
+    if (!url) {
+        alert("لینک را وارد کنید");
+        return;
+    }
+
+    statusBox.textContent = "در حال بررسی لینک...";
+    previewBox.innerHTML = "";
+
+    const form = new FormData();
+    form.append("url", url);
+
+    fetch("{% url 'create_import_batch' %}", {
+        method: "POST",
+        body: form,
+        headers: {
+            "X-CSRFToken": "{{ csrf_token }}"
+        }
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                statusBox.textContent = data.error || "خطا";
+                return;
+            }
+
+            importBatchId = data.batch_id;
+            importPollTimer = setInterval(checkImportStatus, 2000);
+        });
+}
+
+function checkImportStatus() {
+    if (!importBatchId) return;
+
+    fetch("{% url 'import_batch_status' 0 %}".replace("0", importBatchId))
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === "DISCOVERING") {
+                document.getElementById("import-status").textContent =
+                    "در حال استخراج فایل‌ها...";
+            }
+
+            if (data.status === "READY") {
+                clearInterval(importPollTimer);
+                document.getElementById("import-status").textContent =
+                    "فایل‌ها را انتخاب کنید";
+                document.getElementById("import-preview").innerHTML = data.html;
+            }
+
+            if (data.status === "FAILED") {
+                clearInterval(importPollTimer);
+                document.getElementById("import-status").textContent =
+                    data.error || "خطا در بررسی لینک";
+            }
+        });
+}
+
+/* ==========================================
+   ENQUEUE SELECTED IMPORT ITEMS
+========================================== */
+window.enqueueSelected = function (batchId) {
+
+    const selected = Array.from(
+        document.querySelectorAll('.import-item-checkbox:checked')
+    ).map(cb => cb.value);
+
+    if (selected.length === 0) {
+        alert("حداقل یک فایل را انتخاب کنید");
+        return;
+    }
+
+    const modelName = document.querySelector(
+        'input[name="model_name"]:checked'
+    )?.value;
+
+    if (!modelName) {
+        alert("مدل پردازش را انتخاب کنید");
+        return;
+    }
+
+    fetch("/import/enqueue/", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "X-CSRFToken": getCSRFToken(),
+        },
+        body: JSON.stringify({
+            items: selected,
+            batch_id: batchId,     // ✅ خیلی مهم
+            model_name: modelName  // ✅
+        })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if (!data.success) {
+            alert(data.error || "خطا در شروع پردازش");
+            return;
+        }
+        // refresh table
+        location.reload();
+    })
+    .catch(err => {
+        console.error(err);
+        alert("خطای ارتباط با سرور");
+    });
+};
+
+
+
 </script>
+
+
 
 
 {% endblock %}

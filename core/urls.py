@@ -26,4 +26,9 @@ urlpatterns = [
     path('download/txt/<int:file_id>/', views.download_txt, name='download_txt'),
     path('download/word/<int:file_id>/', views.download_word, name='download_word'),
     path('download/pdf/<int:file_id>/', views.download_pdf, name='download_pdf'),
+    
+    
+     path("import/create/", views.create_import_batch, name="create_import_batch"),
+    path("import/status/<int:batch_id>/", views.import_batch_status, name="import_batch_status"),
+    path("import/enqueue/", views.enqueue_import_items, name="enqueue_import_items"),
 ]

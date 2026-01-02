@@ -5,8 +5,10 @@ import requests
 import os
 import subprocess
 import uuid
+import tempfile
 from django.conf import settings
 from django.contrib.sites.models import Site
+from urllib.parse import urlparse
 
 
 
@@ -292,7 +294,7 @@ class ViraService:
 
 
 
-
+FFMPEG_PATH = r"C:\Users\mahan\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
 
 class MediaService:
     @staticmethod
@@ -326,3 +328,20 @@ class MediaService:
         )
 
         return output_path
+    
+    
+    
+    
+    
+def download_temp_file(url: str, timeout=60) -> str:
+    response = requests.get(url, stream=True, timeout=timeout)
+    response.raise_for_status()
+
+    suffix = os.path.splitext(urlparse(url).path)[1] or ".bin"
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    for chunk in response.iter_content(chunk_size=8192):
+        if chunk:
+            tmp.write(chunk)
+    tmp.close()
+    return tmp.name    

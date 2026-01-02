@@ -12,13 +12,20 @@ from django.http import (
     JsonResponse,
     HttpResponseBadRequest
 )
+
+from django.views.decorators.http import require_POST
+from django.views.decorators.csrf import csrf_exempt
+import json
+
+
+
 from django.core.paginator import Paginator
 from django.template.loader import render_to_string
 from django.conf import settings
 
 from .forms import AudioUploadForm, SignUpForm
-from .models import AudioFile
-from .tasks import process_audio_file
+from .models import AudioFile, ImportBatch, ImportItem
+from .tasks import process_audio_file, discover_link
 
 # Word export
 from docx import Document
@@ -208,6 +215,163 @@ def upload_file(request):
             "file_id": audio.id
         }
     )
+    
+    
+    
+@login_required
+def create_import_batch(request):
+    """
+    Creates an ImportBatch from a URL and starts discover task.
+    """
+    if request.method != "POST":
+        return HttpResponseBadRequest("Invalid request")
+
+    url = request.POST.get("url", "").strip()
+    if not url:
+        return JsonResponse({
+            "success": False,
+            "error": "لینک معتبر وارد نشده است."
+        }, status=400)
+
+    batch = ImportBatch.objects.create(
+        user=request.user,
+        source_url=url,
+        status=ImportBatch.Status.CREATED
+    )
+    discover_link.delay(batch.id)
+
+    # Start discover task
+    # task = discover_link.delay(batch.id)
+    # batch.task_id = task.id
+    # batch.save(update_fields=["task_id"])
+
+    return JsonResponse({
+        "success": True,
+        "batch_id": batch.id
+    })
+
+
+@login_required
+def import_batch_status(request, batch_id):
+    batch = get_object_or_404(
+        ImportBatch,
+        id=batch_id,
+        user=request.user
+    )
+
+    if batch.status == ImportBatch.Status.READY:
+        items = batch.items.all()
+        html = render_to_string(
+            "partials/import_items.html",
+            {"batch": batch, "items": items},
+            request=request
+        )
+
+        return JsonResponse({
+            "status": "READY",
+            "html": html
+        })
+
+    if batch.status == ImportBatch.Status.FAILED:
+        return JsonResponse({
+            "status": "FAILED",
+            "error": batch.error_message or "خطا در خواندن لینک."
+        })
+
+    return JsonResponse({
+        "status": batch.status
+    })
+    
+    
+@login_required
+@require_POST
+def enqueue_import_items(request):
+    """
+    Creates AudioFile records from selected ImportItems and enqueues them
+    respecting user-level queue.
+    """
+
+    # --------------------------------------------------
+    # Parse request data (JSON preferred)
+    # --------------------------------------------------
+    try:
+        data = json.loads(request.body)
+        item_ids = data.get("items", [])
+        batch_id = data.get("batch_id")
+        model_name = data.get("model_name", "eboo")
+    except Exception:
+        # fallback for form-data
+        item_ids = request.POST.getlist("items[]")
+        batch_id = request.POST.get("batch_id")
+        model_name = request.POST.get("model_name", "eboo")
+
+    if not item_ids or not batch_id:
+        return JsonResponse({
+            "success": False,
+            "error": "هیچ فایلی انتخاب نشده است."
+        }, status=400)
+
+    # --------------------------------------------------
+    # Load batch (security: user-owned)
+    # --------------------------------------------------
+    batch = get_object_or_404(
+        ImportBatch,
+        id=batch_id,
+        user=request.user
+    )
+
+    # --------------------------------------------------
+    # Load items
+    # --------------------------------------------------
+    items = ImportItem.objects.filter(
+        id__in=item_ids,
+        batch=batch
+    )
+
+    if not items.exists():
+        return JsonResponse({
+            "success": False,
+            "error": "آیتم معتبری یافت نشد."
+        }, status=400)
+
+    created_files = []
+
+    # --------------------------------------------------
+    # Create AudioFile objects
+    # --------------------------------------------------
+    for item in items:
+        audio = AudioFile.objects.create(
+            user=request.user,
+            title=item.title or "Imported file",
+            source_url=item.source_url,
+            is_video=item.is_video,
+            model_name=model_name,
+            status=AudioFile.Status.PENDING,
+            import_batch=batch,
+        )
+        created_files.append(audio)
+
+    # --------------------------------------------------
+    # User-level queue logic
+    # --------------------------------------------------
+    has_active_job = AudioFile.objects.filter(
+        user=request.user,
+        status=AudioFile.Status.PROCESSING
+    ).exists()
+
+    # If user is idle → start first job
+    if created_files and not has_active_job:
+        first = created_files[0]
+        task = process_audio_file.delay(first.id)
+        first.task_id = task.id
+        first.save(update_fields=["task_id"])
+
+    return JsonResponse({
+        "success": True,
+        "created": len(created_files)
+    })
+    
+    
 
 # ---------------------------------------------------------
 # AJAX — File list refresh for polling
