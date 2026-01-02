@@ -169,7 +169,7 @@ document.getElementById("upload-form").addEventListener("submit", function (e) {
     const formData = new FormData(this);
     const xhr = new XMLHttpRequest();
 
-    /* ✅ IMPORTANT */
+    /*  IMPORTANT */
     markUploadStart();
 
     xhr.open("POST", "{% url 'upload_file' %}");
@@ -421,8 +421,8 @@ window.enqueueSelected = function (batchId) {
         },
         body: JSON.stringify({
             items: selected,
-            batch_id: batchId,     // ✅ خیلی مهم
-            model_name: modelName  // ✅
+            batch_id: batchId,     
+            model_name: modelName  
         })
     })
     .then(res => res.json())
