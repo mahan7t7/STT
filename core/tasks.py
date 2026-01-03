@@ -6,7 +6,6 @@ from celery import shared_task
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-from core.services import download_temp_file
 
 
 from .models import AudioFile, ImportBatch, ImportItem

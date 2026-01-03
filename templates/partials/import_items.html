@@ -1,16 +1,14 @@
 <div id="import-items">
 
-  <!-- انتخاب مدل -->
   <div class="mb-3">
     <label class="form-label">مدل تبدیل:</label>
     <div class="d-flex gap-3">
-      <label><input type="radio" name="model_name" value="eboo" checked> Eboo</label>
-      <label><input type="radio" name="model_name" value="vira"> Vira</label>
-      <label><input type="radio" name="model_name" value="scribe"> Scribe</label>
+      <label><input type="radio" name="import_model_name" value="eboo" checked> Eboo</label>
+      <label><input type="radio" name="import_model_name" value="vira"> Vira</label>
+      <label><input type="radio" name="import_model_name" value="scribe"> Scribe</label>
     </div>
   </div>
 
-  <!-- لیست فایل‌ها -->
   {% for item in items %}
     <div class="form-check">
       <input class="form-check-input import-item-checkbox"
@@ -23,8 +21,7 @@
     </div>
   {% endfor %}
 
-  <!-- دکمه شروع -->
-  <button class="btn btn-primary mt-3"
+  <button type="button" class="btn btn-primary mt-3"
           onclick="enqueueSelected({{ batch.id }})">
     شروع تبدیل
   </button>

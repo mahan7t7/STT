@@ -2,6 +2,14 @@ from django.db import models
 from django.contrib.auth.models import User
 import os
 
+class STTModelChoices(models.TextChoices):
+    EBOO = 'eboo', 'Eboo'
+    VIRA = 'vira', 'Vira'
+    SCRIBE = 'scribe', 'Scribe'
+
+
+
+
 class ImportBatch(models.Model):
     """
     Represents a single import-by-link request.
@@ -14,6 +22,15 @@ class ImportBatch(models.Model):
         READY = "ready", "آماده انتخاب"
         FAILED = "failed", "خطا"
 
+    model_name = models.CharField(
+        max_length=20,
+        choices=STTModelChoices.choices,
+        default=STTModelChoices.EBOO,
+        verbose_name="مدل پردازش"
+    )
+    
+    
+    
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -132,8 +149,8 @@ class AudioFile(models.Model):
     # ==============================
     model_name = models.CharField(
         max_length=20,
-        choices=ModelChoices.choices,
-        default=ModelChoices.EBOO,
+        choices=STTModelChoices.choices,
+        default=STTModelChoices.EBOO,
         verbose_name="مدل پردازش"
     )
 

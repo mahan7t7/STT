@@ -404,20 +404,29 @@ window.enqueueSelected = function (batchId) {
         return;
     }
 
-    const modelName = document.querySelector(
-        'input[name="model_name"]:checked'
-    )?.value;
+
+    let modelInput = document.querySelector('input[name="import_model_name"]:checked');
+    
+
+    if (!modelInput) {
+ 
+         modelInput = document.querySelector('input[name="model_name"]:checked');
+    }
+
+    const modelName = modelInput?.value;
 
     if (!modelName) {
         alert("مدل پردازش را انتخاب کنید");
         return;
     }
+    
+    console.log("Selected Model for Import:", modelName); 
 
     fetch("/import/enqueue/", {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "X-CSRFToken": getCSRFToken(),
+            "X-CSRFToken": document.querySelector('[name=csrfmiddlewaretoken]').value,
         },
         body: JSON.stringify({
             items: selected,
@@ -431,14 +440,16 @@ window.enqueueSelected = function (batchId) {
             alert(data.error || "خطا در شروع پردازش");
             return;
         }
-        // refresh table
-        location.reload();
+
+        window.location.href = window.location.pathname; 
     })
     .catch(err => {
         console.error(err);
         alert("خطای ارتباط با سرور");
     });
+
 };
+
 
 
 
