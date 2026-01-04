@@ -441,7 +441,7 @@ window.enqueueSelected = function (batchId) {
             return;
         }
 
-        window.location.href = window.location.pathname; 
+        window.location.href = window.location.pathname + "?t=" + Date.now() + "#file-table-container"; 
     })
     .catch(err => {
         console.error(err);

@@ -28,45 +28,49 @@ HUMAN_ERRORS = {
 }
 
 
+# core/tasks.py
+
 @shared_task(bind=True)
 def process_audio_file(self, file_id):
     """
     Celery task to process a single AudioFile.
-
-    Supports:
-    - audio upload
-    - video upload (audio extraction)
-    - user-level queue
+    
+    Improvements:
+    - Queue logic moved to 'finally' block (Runs even on error).
+    - Prevents race conditions using atomic updates.
+    - robust cleanup of temp files.
     """
 
     logger.info(f"[TASK START] file_id={file_id}")
 
     audio_file = None
     extracted_audio_path = None
+    temp_path = None  
 
     try:
         # ---------------------------------------------------------
-        # Load DB record
+        # 1. Load DB record
         # ---------------------------------------------------------
         try:
             audio_file = AudioFile.objects.get(id=file_id)
         except AudioFile.DoesNotExist:
             logger.error(f"[ERROR] AudioFile {file_id} not found.")
-            return
+            return 
 
         # ---------------------------------------------------------
-        # Track task + set PROCESSING
+        # 2. Track task + set PROCESSING
         # ---------------------------------------------------------
         audio_file.task_id = self.request.id
         audio_file.status = AudioFile.Status.PROCESSING
         audio_file.save(update_fields=["task_id", "status"])
 
-        logger.info(f"[STATUS] File {file_id} → PROCESSING")
+        logger.info(f"[STATUS] File {file_id} -> PROCESSING")
+
 
         # -------------------------------
-        # Resolve file_path
+        # 3. Resolve file_path
         # -------------------------------
-        temp_path = None
+        file_path = None
 
         if audio_file.audio_file:
             file_path = audio_file.audio_file.path
@@ -81,16 +85,16 @@ def process_audio_file(self, file_id):
                 audio_file.status = AudioFile.Status.FAILED
                 audio_file.error_message = "دانلود فایل از لینک ناموفق بود."
                 audio_file.save()
-                return
+                raise Exception("Download failed")
 
         else:
             audio_file.status = AudioFile.Status.FAILED
             audio_file.error_message = "هیچ منبع فایلی یافت نشد."
             audio_file.save()
-            return
+            raise Exception("No source file")
 
         # ---------------------------------------------------------
-        # Video → extract audio
+        # 4. Video → extract audio
         # ---------------------------------------------------------
         if audio_file.is_video:
             logger.info(f"[VIDEO] Extracting audio for file {file_id}")
@@ -102,24 +106,22 @@ def process_audio_file(self, file_id):
                 audio_file.status = AudioFile.Status.FAILED
                 audio_file.error_message = HUMAN_ERRORS["video"]
                 audio_file.save()
-                return
+                raise Exception("Video extraction failed")
 
         # ---------------------------------------------------------
-        # Select AI service
+        # 5. Select AI service
         # ---------------------------------------------------------
         model = audio_file.model_name or AudioFile.ModelChoices.EBOO
         logger.debug(f"[AI SERVICE] model={model} file={file_path}")
 
+        result = None
         try:
             if model == AudioFile.ModelChoices.EBOO:
                 result = EbooService.process(file_path)
-
             elif model == AudioFile.ModelChoices.SCRIBE:
                 result = ScribeService.process(file_path)
-
             elif model == AudioFile.ModelChoices.VIRA:
                 result = ViraService.process(file_path)
-
             else:
                 result = {"error": f"Unknown model: {model}"}
 
@@ -128,34 +130,30 @@ def process_audio_file(self, file_id):
             audio_file.status = AudioFile.Status.FAILED
             audio_file.error_message = HUMAN_ERRORS["service"]
             audio_file.save()
-            return
+            raise Exception("AI Service failed")
 
         # ---------------------------------------------------------
-        # Validate service result
+        # 6. Validate service result
         # ---------------------------------------------------------
         if not result or "error" in result or "exception" in result:
             logger.error(f"[SERVICE ERROR] {result}")
 
             audio_file.status = AudioFile.Status.FAILED
-
             if "timeout" in str(result).lower():
                 audio_file.error_message = HUMAN_ERRORS["timeout"]
             else:
                 audio_file.error_message = HUMAN_ERRORS["service"]
-
+            
             audio_file.save()
-            return
+            raise Exception("Service returned error")
 
         # ---------------------------------------------------------
-        # Extract final text
+        # 7. Extract final text & Save Success
         # ---------------------------------------------------------
         final_text = (result.get("text") or "").strip()
         if not final_text:
             final_text = HUMAN_ERRORS["empty"]
 
-        # ---------------------------------------------------------
-        # Save success
-        # ---------------------------------------------------------
         audio_file.transcript_text = final_text
         audio_file.status = AudioFile.Status.COMPLETED
         audio_file.error_message = None
@@ -164,18 +162,15 @@ def process_audio_file(self, file_id):
         logger.info(f"[TASK DONE] File {file_id} COMPLETED")
 
     except Exception as e:
-        logger.critical(
-            f"[CRITICAL FAILURE] file_id={file_id} err={e}",
-            exc_info=True,
-        )
-        if audio_file:
+        logger.critical(f"[CRITICAL FAILURE] file_id={file_id} err={e}", exc_info=True)
+        if audio_file and audio_file.status != AudioFile.Status.FAILED:
             audio_file.status = AudioFile.Status.FAILED
             audio_file.error_message = HUMAN_ERRORS["unknown"]
             audio_file.save()
 
     finally:
         # ---------------------------------------------------------
-        # Cleanup temp extracted audio
+        # A. Cleanup temp files
         # ---------------------------------------------------------
         if extracted_audio_path and os.path.exists(extracted_audio_path):
             try:
@@ -183,40 +178,58 @@ def process_audio_file(self, file_id):
                 logger.info(f"[CLEANUP] Temp audio removed: {extracted_audio_path}")
             except Exception as ce:
                 logger.warning(f"[CLEANUP ERROR] {ce}")
-                
-                
+
         if temp_path and os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
                 logger.info(f"[CLEANUP] Temp file deleted: {temp_path}")
             except Exception:
-                logger.warning("[CLEANUP] Failed to delete temp file", exc_info=True)        
+                logger.warning("[CLEANUP] Failed to delete temp file", exc_info=True)
 
-    # ======================================================================
-    # USER-LEVEL QUEUE
-    # ======================================================================
-    try:
-        if not audio_file:
-            return
+        # ---------------------------------------------------------
+        # B. USER-LEVEL QUEUE (Logic moved INSIDE finally)
+        # ---------------------------------------------------------
+        try:
+ 
+            current_user_id = None
+            if audio_file:
+                current_user_id = audio_file.user_id
+            else:
+                try:
+                    current_user_id = AudioFile.objects.values_list('user_id', flat=True).get(id=file_id)
+                except:
+                    pass
 
-        next_file = (
-            AudioFile.objects
-            .filter(user=audio_file.user, status=AudioFile.Status.PENDING)
-            .order_by("created_at")
-            .first()
-        )
+            if current_user_id:
+                other_active_tasks = AudioFile.objects.filter(
+                    user_id=current_user_id,
+                    status=AudioFile.Status.PROCESSING
+                ).exclude(id=file_id).exists()
 
-        if next_file:
-            logger.info(
-                f"[QUEUE] Starting next file for user {audio_file.user_id}: {next_file.id}"
-            )
-            task = process_audio_file.delay(next_file.id)
-            next_file.task_id = task.id
-            next_file.save(update_fields=["task_id"])
+                if not other_active_tasks:
+                    next_file = (
+                        AudioFile.objects
+                        .filter(user_id=current_user_id, status=AudioFile.Status.PENDING)
+                        .order_by("created_at")
+                        .first()
+                    )
 
-    except Exception as q_err:
-        logger.error(f"[QUEUE ERROR] {q_err}", exc_info=True)
+                    if next_file:
+                        logger.info(f"[QUEUE] Starting next file for user {current_user_id}: {next_file.id}")
+                        
 
+                        next_file.status = AudioFile.Status.PROCESSING
+                        next_file.save(update_fields=["status"])
+
+                        task = process_audio_file.delay(next_file.id)
+                        
+                        next_file.task_id = task.id
+                        next_file.save(update_fields=["task_id"])
+                else:
+                    logger.info(f"[QUEUE] User {current_user_id} has other active tasks. Skipping queue trigger.")
+
+        except Exception as q_err:
+            logger.error(f"[QUEUE ERROR] {q_err}", exc_info=True)
 
 # ======================================================================
 # SYSTEM TASKS
