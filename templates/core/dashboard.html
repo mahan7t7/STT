@@ -163,6 +163,11 @@ document.getElementById("upload-form").addEventListener("submit", function (e) {
 
     tbody.insertAdjacentHTML("afterbegin", createSkeletonTempRow(tempId));
 
+    document.getElementById("file-table-container").scrollIntoView({ 
+        behavior: "smooth", 
+        block: "start" 
+    });
+
     const emptyRow = document.getElementById("empty-row");
     if (emptyRow) emptyRow.remove();
 
