@@ -4,6 +4,7 @@ import logging
 import os
 from celery import shared_task
 import requests
+import yt_dlp
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
@@ -273,75 +274,170 @@ def start_next_pending_jobs():
 
 
 
+logger = logging.getLogger("core")
+
 @shared_task(bind=True)
 def discover_link(self, batch_id):
     """
-    Discover audio/video files from a given ImportBatch.source_url.
-    Creates ImportItem records for preview.
+    Advanced discovery logic:
+    1. Try yt-dlp (Best for embedded players, streaming, youtube, aparat, etc.)
+    2. Fallback to BeautifulSoup (Best for directory listings or simple HTML links)
     """
-
     logger.info(f"[DISCOVER START] batch_id={batch_id}")
 
     try:
         batch = ImportBatch.objects.get(id=batch_id)
     except ImportBatch.DoesNotExist:
-        logger.error(f"[DISCOVER ERROR] Batch {batch_id} not found")
         return
 
     batch.status = ImportBatch.Status.DISCOVERING
     batch.save(update_fields=["status"])
 
+    found_items = []
+
+    # =========================================================
+    # STRATEGY 1: YT-DLP (The Heavy Lifter)
+    # =========================================================
     try:
-        resp = requests.get(batch.source_url, timeout=20)
-        resp.raise_for_status()
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'extract_flat': 'in_playlist', # فقط لیست را بگیر، دانلود نکن
+            'skip_download': True,
+            # شبیه‌سازی مرورگر برای عبور از فیلترهای ساده
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"[DISCOVER] Trying yt-dlp for {batch.source_url}")
+            info = ydl.extract_info(batch.source_url, download=False)
+            
+            if info:
+                # اگر لینک پلی‌لیست بود
+                if 'entries' in info:
+                    entries = info['entries']
+                else:
+                    # اگر تک فایل بود
+                    entries = [info]
+
+                for entry in entries:
+                    if not entry: continue
+                    
+                    # استخراج اطلاعات
+                    title = entry.get('title') or "Untitled"
+                    url = entry.get('url') or entry.get('webpage_url')
+                    is_video = True # پیش‌فرض ویدیو می‌گیریم مگر اینکه خلافش ثابت شود
+                    
+                    # تشخیص صوتی بودن اگر ممکن باشد
+                    if entry.get('vcodec') == 'none' and entry.get('acodec') != 'none':
+                        is_video = False
+
+                    if url:
+                        found_items.append({
+                            'title': title,
+                            'url': url,
+                            'is_video': is_video
+                        })
+
     except Exception as e:
-        logger.error(f"[DISCOVER FETCH ERROR] {e}")
-        batch.status = ImportBatch.Status.FAILED
-        batch.error_message = "دریافت لینک امکان‌پذیر نبود."
-        batch.save()
-        return
+        logger.warning(f"[DISCOVER] yt-dlp failed or found nothing: {e}")
+        # ادامه می‌دهیم به روش دوم...
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    # =========================================================
+    # STRATEGY 2: BeautifulSoup (Fallback for Direct Links)
+    # =========================================================
+    if not found_items:
+        logger.info(f"[DISCOVER] Fallback to BeautifulSoup scraping...")
+        try:
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+            }
+            # verify=False برای سایت‌های دولتی ایران که SSL مشکل‌دار دارند ضروری است
+            resp = requests.get(batch.source_url, headers=headers, timeout=20, verify=False)
+            resp.raise_for_status()
+            
+            soup = BeautifulSoup(resp.text, "html.parser")
+            
+            # لیست کامل‌تری از فرمت‌ها
+            AUDIO_EXT = (".mp3", ".wav", ".ogg", ".m4a", ".wma", ".aac", ".flac")
+            VIDEO_EXT = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".3gp", ".m3u8")
 
-    found = 0
-    AUDIO_EXT = (".mp3", ".wav", ".ogg", ".m4a")
-    VIDEO_EXT = (".mp4", ".mkv", ".webm", ".avi")
+            # جستجوی تگ‌های مختلف
+            for tag in soup.find_all(["audio", "video", "source", "a", "iframe"]):
+                src = None
+                
+                # 1. تگ‌های استاندارد مدیا
+                if tag.name in ("audio", "video", "source"):
+                    src = tag.get("src")
+                
+                # 2. لینک‌های مستقیم دانلودی
+                elif tag.name == "a":
+                    href = tag.get("href", "")
+                    if href and href.lower().endswith(AUDIO_EXT + VIDEO_EXT):
+                        src = href
+                        
+                if not src:
+                    continue
 
-    for tag in soup.find_all(["audio", "video", "a"]):
-        src = None
+                # نرمال‌سازی لینک
+                file_url = urljoin(batch.source_url, src)
+                
+                # فیلتر کردن بر اساس پسوند (فقط برای تگ <a> ضروری است، اما برای همه چک می‌کنیم)
+                path = urlparse(file_url).path
+                ext = os.path.splitext(path)[1].lower()
+                
+                # اگر تگ source/audio/video بود حتی بدون پسوند هم قبول می‌کنیم
+                is_explicit_media_tag = tag.name in ("audio", "video", "source")
+                has_valid_ext = ext in (AUDIO_EXT + VIDEO_EXT)
 
-        if tag.name in ("audio", "video"):
-            src = tag.get("src")
-        elif tag.name == "a":
-            href = tag.get("href", "")
-            if href.lower().endswith(AUDIO_EXT + VIDEO_EXT):
-                src = href
+                if is_explicit_media_tag or has_valid_ext:
+                    is_video = True
+                    if tag.name == "audio" or ext in AUDIO_EXT:
+                        is_video = False
+                        
+                    found_items.append({
+                        'title': os.path.basename(path) or "Unknown File",
+                        'url': file_url,
+                        'is_video': is_video
+                    })
 
-        if not src:
+        except Exception as e:
+            logger.error(f"[DISCOVER SCRAPE ERROR] {e}")
+
+    # =========================================================
+    # SAVE RESULTS
+    # =========================================================
+    saved_count = 0
+    unique_urls = set()
+
+    for item in found_items:
+        url = item['url']
+        
+        # جلوگیری از تکراری شدن در یک بچ
+        if url in unique_urls:
             continue
-
-        file_url = urljoin(batch.source_url, src)
-        ext = os.path.splitext(urlparse(file_url).path)[1].lower()
-
-        is_video = ext in VIDEO_EXT
+        unique_urls.add(url)
+        
+        # جلوگیری از تکراری شدن در دیتابیس (اختیاری)
+        if ImportItem.objects.filter(batch=batch, source_url=url).exists():
+            continue
 
         ImportItem.objects.create(
             batch=batch,
-            title=os.path.basename(file_url),
-            source_url=file_url,
-            is_video=is_video
+            title=item['title'][:250], # محدود کردن طول تایتل
+            source_url=url,
+            is_video=item['is_video']
         )
+        saved_count += 1
 
-        found += 1
-
-    if found == 0:
+    if saved_count == 0:
         batch.status = ImportBatch.Status.FAILED
-        batch.error_message = "هیچ فایل صوتی یا ویدیویی در لینک یافت نشد."
+        batch.error_message = "هیچ فایل قابل پردازشی یافت نشد."
         batch.save()
         logger.warning(f"[DISCOVER EMPTY] batch_id={batch_id}")
         return
 
     batch.status = ImportBatch.Status.READY
     batch.save(update_fields=["status"])
-
-    logger.info(f"[DISCOVER DONE] batch_id={batch_id} items={found}")
+    logger.info(f"[DISCOVER DONE] batch_id={batch_id} items={saved_count}")

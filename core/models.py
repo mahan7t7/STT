@@ -133,7 +133,7 @@ class AudioFile(models.Model):
         verbose_name="فایل صوتی"
     )
 
-    source_url = models.URLField(
+    source_url = models.TextField(
         blank=True,
         null=True,
         verbose_name="لینک فایل"
