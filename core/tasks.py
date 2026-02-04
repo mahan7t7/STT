@@ -1,7 +1,9 @@
 # core/tasks.py
 
 import logging
+import json
 import os
+import subprocess
 from celery import shared_task
 import requests
 import yt_dlp
@@ -25,8 +27,16 @@ HUMAN_ERRORS = {
     "service": "خطا در ارتباط با سرویس پردازش.",
     "timeout": "پردازش فایل بیش از حد طول کشید.",
     "empty": "متنی از فایل استخراج نشد.",
+    "network": "خطا در دانلود فایل (مشکل شبکه یا فیلترینگ).",
     "unknown": "خطای نامشخص در پردازش فایل.",
 }
+
+MAX_CHUNK_SECONDS = {
+    AudioFile.ModelChoices.VIRA: 300,     # 5 minutes
+    AudioFile.ModelChoices.EBOO: 480,     # 8 minutes
+    AudioFile.ModelChoices.SCRIBE: 600,   # 10 minutes
+}
+
 
 
 # core/tasks.py
@@ -85,8 +95,9 @@ def process_audio_file(self, file_id):
                 logger.error(f"[IMPORT ERROR] {e}", exc_info=True)
                 audio_file.status = AudioFile.Status.FAILED
                 audio_file.error_message = "دانلود فایل از لینک ناموفق بود."
-                audio_file.save()
-                raise Exception("Download failed")
+                audio_file.save(update_fields=["status", "error_message"])
+                return
+
 
         else:
             audio_file.status = AudioFile.Status.FAILED
@@ -106,52 +117,145 @@ def process_audio_file(self, file_id):
                 logger.error(f"[VIDEO ERROR] {ve}", exc_info=True)
                 audio_file.status = AudioFile.Status.FAILED
                 audio_file.error_message = HUMAN_ERRORS["video"]
-                audio_file.save()
-                raise Exception("Video extraction failed")
+                audio_file.save(update_fields=["status", "error_message"])
+                return  
+            
+            
+            
+        # ---------------------------------------------------------
+        # 4.5 Decide chunking 
+        # ---------------------------------------------------------
+        def get_audio_duration(path):
+            cmd = [
+                "ffprobe",
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                path
+            ]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            try:
+                return float(r.stdout.strip())
+            except:
+                return 0.0
 
+        duration = get_audio_duration(file_path)
+
+        MAX_CHUNK_SECONDS = {
+            AudioFile.ModelChoices.VIRA: 300,   # ✅ 5 دقیقه
+            AudioFile.ModelChoices.EBOO: 480,
+            AudioFile.ModelChoices.SCRIBE: 600,
+        }
+
+        model = audio_file.model_name or AudioFile.ModelChoices.EBOO
+        max_chunk = MAX_CHUNK_SECONDS.get(model, 480)
+
+        if duration > max_chunk:
+            logger.info(f"[CHUNKING] Long file detected ({int(duration)}s), max_chunk={max_chunk}s")
+
+            chunks = MediaService.smart_split_audio(
+                file_path,
+                max_chunk_sec=max_chunk,
+                min_chunk_sec=60
+            )
+
+        else:
+            chunks = [file_path]
+            
+            
+            
+        # ---------------------------------------------------------
+        # 4.6 Validate chunks (CRITICAL FIX ✅)
+        # ---------------------------------------------------------
+        valid_chunks = []
+
+        for c in chunks:
+            if not os.path.exists(c):
+                logger.warning(f"[CHUNK DROP] file not found: {c}")
+                continue
+
+            dur = get_audio_duration(c)
+
+            # ✅ کمتر از ۱ ثانیه = chunk خراب
+            if dur < 1.0:
+                logger.warning(f"[CHUNK DROP] empty/short chunk: {c} ({dur}s)")
+                try:
+                    os.remove(c)
+                except:
+                    pass
+                continue
+
+            valid_chunks.append(c)
+
+        chunks = valid_chunks
+
+        if not chunks:
+            audio_file.status = AudioFile.Status.FAILED
+            audio_file.error_message = "Chunking failed: no valid audio chunks produced"
+            audio_file.save(update_fields=["status", "error_message"])
+            return
+
+            
+            
+            
+            
         # ---------------------------------------------------------
         # 5. Select AI service
         # ---------------------------------------------------------
         model = audio_file.model_name or AudioFile.ModelChoices.EBOO
         logger.debug(f"[AI SERVICE] model={model} file={file_path}")
 
-        result = None
-        try:
-            if model == AudioFile.ModelChoices.EBOO:
-                result = EbooService.process(file_path)
-            elif model == AudioFile.ModelChoices.SCRIBE:
-                result = ScribeService.process(file_path)
-            elif model == AudioFile.ModelChoices.VIRA:
-                result = ViraService.process(file_path)
-            else:
-                result = {"error": f"Unknown model: {model}"}
+        texts = []
 
-        except Exception as api_err:
-            logger.error(f"[AI ERROR] {api_err}", exc_info=True)
-            audio_file.status = AudioFile.Status.FAILED
-            audio_file.error_message = HUMAN_ERRORS["service"]
-            audio_file.save()
-            raise Exception("AI Service failed")
+        for idx, chunk_path in enumerate(chunks):
+            chunk_duration = get_audio_duration(chunk_path)
+            if chunk_duration < 1.0:
+                logger.warning(f"[SKIP] chunk too short for processing: {chunk_path}")
+                continue
+
+            logger.info(f"[CHUNK] {idx + 1}/{len(chunks)} processing")
+
+            try:
+                if model == AudioFile.ModelChoices.EBOO:
+                    result = EbooService.process(chunk_path)
+                elif model == AudioFile.ModelChoices.SCRIBE:
+                    result = ScribeService.process(chunk_path)
+                elif model == AudioFile.ModelChoices.VIRA:
+                    result = ViraService.process(chunk_path)
+                else:
+                    result = {"error": f"Unknown model: {model}"}
+
+            except Exception as api_err:
+                raise api_err
+
+            if not result or "error" in result or "exception" in result:
+                logger.error(f"[CHUNK FAILED] skipping chunk: {result}")
+                continue
+
+
+            chunk_text = (result.get("text") or "").strip()
+            if chunk_text:
+                texts.append(chunk_text)
+
+
 
         # ---------------------------------------------------------
-        # 6. Validate service result
+        # 6. Validate final aggregated result ✅
         # ---------------------------------------------------------
-        if not result or "error" in result or "exception" in result:
-            logger.error(f"[SERVICE ERROR] {result}")
+        if not texts:
+            logger.error("[SERVICE ERROR] No valid text extracted from any chunk")
 
             audio_file.status = AudioFile.Status.FAILED
-            if "timeout" in str(result).lower():
-                audio_file.error_message = HUMAN_ERRORS["timeout"]
-            else:
-                audio_file.error_message = HUMAN_ERRORS["service"]
-            
-            audio_file.save()
-            raise Exception("Service returned error")
+            audio_file.error_message = HUMAN_ERRORS["empty"]
+            audio_file.save(update_fields=["status", "error_message"])
+            return
+
+
 
         # ---------------------------------------------------------
         # 7. Extract final text & Save Success
         # ---------------------------------------------------------
-        final_text = (result.get("text") or "").strip()
+        final_text = "\n\n".join(texts)
         if not final_text:
             final_text = HUMAN_ERRORS["empty"]
 
@@ -186,6 +290,18 @@ def process_audio_file(self, file_id):
                 logger.info(f"[CLEANUP] Temp file deleted: {temp_path}")
             except Exception:
                 logger.warning("[CLEANUP] Failed to delete temp file", exc_info=True)
+                
+        # ---------------------------------------------------------
+        # A.5 Cleanup audio chunks (NEW ✅)
+        # ---------------------------------------------------------
+        if 'chunks' in locals() and len(chunks) > 1:
+            for c in chunks:
+                if c != file_path and os.path.exists(c):
+                    try:
+                        os.remove(c)
+                        logger.info(f"[CLEANUP] Chunk removed: {c}")
+                    except Exception as ce:
+                        logger.warning(f"[CLEANUP] Failed to remove chunk: {ce}")        
 
         # ---------------------------------------------------------
         # B. USER-LEVEL QUEUE (Logic moved INSIDE finally)

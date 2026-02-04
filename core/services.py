@@ -28,6 +28,22 @@ import requests
 import os
 from django.conf import settings
 
+
+def get_audio_duration(path: str) -> float:
+    cmd = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        path
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        return float(r.stdout.strip())
+    except:
+        return 0.0
+
+
 class EbooService:
     BASE_URL = "https://www.eboo.ir/api/ocr/getway"
 
@@ -244,12 +260,10 @@ class ViraService:
         }
 
         filename = os.path.basename(file_path)
-        mime_type = "audio/mpeg" if filename.lower().endswith(".mp3") else "audio/wav"
-        model_type = "telephony" if filename.lower().endswith(".mp3") else "default"
 
-        files = {
-            "audio": (filename, open(file_path, "rb"), mime_type)
-        }
+        # ✅ چون کل سیستم تو WAV 16kHz mono می‌دهد
+        mime_type = "audio/wav"
+        model_type = "telephony"   # ✅ فیکس اصلی Vira
 
         data = {
             "model": model_type,
@@ -263,14 +277,29 @@ class ViraService:
         }
 
         try:
-            r = requests.post(ViraService.URL, data=data, files=files, headers=headers, timeout=900)
-        except Exception as e:
-            return {"exception": f"Request error: {str(e)}"}
+            # ✅ فایل فقط داخل context باز می‌شود
+            with open(file_path, "rb") as f:
+                files = {
+                    "audio": (filename, f, mime_type)
+                }
 
-        if r.status_code not in (200, 201):
-            return {"error": f"Vira failed: {r.text}"}
+                r = requests.post(
+                    ViraService.URL,
+                    data=data,
+                    files=files,
+                    headers=headers,
+                    timeout=900
+                )
 
-        js = r.json()
+            if r.status_code not in (200, 201):
+                return {"error": f"Vira failed: {r.text}"}
+
+            js = r.json()
+
+        except requests.exceptions.RequestException as e:
+            return {"exception": f"Request error: {e}"}
+        except ValueError:
+            return {"error": "Invalid JSON returned from Vira"}
 
         text = (
             js.get("data", {})
@@ -285,11 +314,14 @@ class ViraService:
             if isinstance(ai, dict):
                 segments = ai.get("segments")
                 if isinstance(segments, list):
-                    text = " ".join(seg.get("text", "") for seg in segments if seg.get("text"))
+                    text = " ".join(
+                        seg.get("text", "") for seg in segments if seg.get("text")
+                    )
                 elif "text" in ai:
                     text = ai.get("text")
 
         return {"text": text or ""}
+
 
 
 
@@ -330,8 +362,164 @@ class MediaService:
         return output_path
     
     
-    
-    
+    @staticmethod
+    def smart_split_audio(
+        input_path: str,
+        max_chunk_sec: int = 480,   # 8 دقیقه
+        min_chunk_sec: int = 60,
+        silence_db: int = -35,
+        silence_dur: float = 0.6
+    ) -> list[str]:
+        """
+        Silence-aware audio chunking.
+        Avoids cutting in the middle of sentences.
+        """
+
+        import subprocess
+
+        work_dir = os.path.dirname(input_path)
+        base = os.path.splitext(os.path.basename(input_path))[0]
+
+        # --------------------------------------------------
+        # 1. Detect silence
+        # --------------------------------------------------
+        detect_cmd = [
+            "ffmpeg",
+            "-i", input_path,
+            "-af", f"silencedetect=noise={silence_db}dB:d={silence_dur}",
+            "-f", "null", "-"
+        ]
+
+        proc = subprocess.Popen(
+            detect_cmd,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            text=True
+        )
+
+        silence_points = []
+        for line in proc.stderr:
+            if "silence_end" in line:
+                try:
+                    t = float(line.split("silence_end:")[1].split("|")[0].strip())
+                    silence_points.append(t)
+                except:
+                    pass
+
+        proc.wait()
+
+        if not silence_points:
+            return MediaService._time_split_fallback(input_path, max_chunk_sec)
+
+        # --------------------------------------------------
+        # 2. Build cut points
+        # --------------------------------------------------
+        cuts = []
+        start = 0.0
+
+        for sp in silence_points:
+            if sp - start >= max_chunk_sec:
+                valid = [s for s in silence_points if start + min_chunk_sec <= s <= sp]
+                if valid:
+                    cut = valid[-1]
+                    cuts.append((start, cut))
+                    start = cut
+
+        
+        total_duration = get_audio_duration(input_path)
+
+        tail_len = total_duration - start
+
+        # ✅ فقط اگر chunk آخر واقعاً صدا دارد
+        if tail_len >= min_chunk_sec:
+            cuts.append((start, None))
+        else:
+            # ✅ اگر خیلی کوتاه است، به chunk قبلی merge شود
+            if cuts:
+                prev_start, _ = cuts[-1]
+                cuts[-1] = (prev_start, None)
+
+
+        # --------------------------------------------------
+        # 3. Export chunks
+        # --------------------------------------------------
+        paths = []
+
+        for i, (s, e) in enumerate(cuts):
+            out = os.path.join(work_dir, f"{base}_chunk_{i:03d}.wav")
+
+            cmd = ["ffmpeg", "-y", "-i", input_path, "-ss", str(s)]
+            if e:
+                cmd += ["-to", str(e)]
+
+            cmd += [
+                "-ac", "1",
+                "-ar", "16000",
+                "-acodec", "pcm_s16le",
+                out
+            ]
+
+            subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=True
+            )
+
+            dur = get_audio_duration(out)
+            if dur < 1.0:
+                try:
+                    os.remove(out)
+                except:
+                    pass
+            else:
+                paths.append(out)
+
+
+        return paths
+
+    @staticmethod
+    def _time_split_fallback(path: str, sec: int) -> list[str]:
+        base = os.path.splitext(path)[0]
+        dir_ = os.path.dirname(path)
+        pattern = os.path.basename(base) + "_chunk_%03d.wav"
+
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-i", path,
+                "-f", "segment",
+                "-segment_time", str(sec),
+                "-ac", "1",
+                "-ar", "16000",
+                "-acodec", "pcm_s16le",
+                os.path.join(dir_, pattern)
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True
+        )
+
+        chunks = []
+        for f in sorted(os.listdir(dir_)):
+            if not f.startswith(os.path.basename(base) + "_chunk_"):
+                continue
+
+            full = os.path.join(dir_, f)
+            dur = get_audio_duration(full)
+
+            if dur < 1.0:
+                try:
+                    os.remove(full)
+                except:
+                    pass
+                continue
+
+            chunks.append(full)
+
+        return chunks
+        
+        
+        
     
 def download_temp_file(url: str, timeout=60) -> str:
     response = requests.get(url, stream=True, timeout=timeout)
