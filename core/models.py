@@ -169,6 +169,17 @@ class AudioFile(models.Model):
         null=True,
         verbose_name="متن استخراج شده"
     )
+    
+    summary_text = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name="خلاصه متن"
+    )
+
+    show_summary = models.BooleanField(
+        default=True,
+        verbose_name="نمایش خلاصه به جای متن کامل"
+    )
 
     error_message = models.TextField(
         blank=True,

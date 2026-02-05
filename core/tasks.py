@@ -18,6 +18,7 @@ from .services import (
     ViraService,
     MediaService,
     download_temp_file,
+    SummaryService,
 )
 
 logger = logging.getLogger("core")
@@ -263,6 +264,33 @@ def process_audio_file(self, file_id):
         audio_file.status = AudioFile.Status.COMPLETED
         audio_file.error_message = None
         audio_file.save()
+        
+        # -----------------------------------------
+        # 8. Summarize final text (NEW ✅)
+        # -----------------------------------------
+        try:
+            logger.info(f"[SUMMARY] Starting summary for file_id={file_id}")
+
+            summary = SummaryService.summarize(final_text)
+
+            if summary:
+                audio_file.summary_text = summary
+                audio_file.show_summary = True
+                audio_file.save(update_fields=["summary_text", "show_summary"])
+
+                logger.info(f"[SUMMARY] Summary saved for file_id={file_id}")
+
+            else:
+                logger.warning(f"[SUMMARY] Empty summary returned for file_id={file_id}")
+
+        except Exception as e:
+            logger.warning(
+                f"[SUMMARY FAILED] file_id={file_id} err={e}",
+                exc_info=True
+            )
+
+                
+        
 
         logger.info(f"[TASK DONE] File {file_id} COMPLETED")
 

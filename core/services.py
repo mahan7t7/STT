@@ -533,3 +533,109 @@ def download_temp_file(url: str, timeout=60) -> str:
             tmp.write(chunk)
     tmp.close()
     return tmp.name    
+
+
+
+
+import requests
+import logging
+
+logger = logging.getLogger("core")
+
+# class SummaryService:
+#     ENDPOINT = "https://dadmatech.gw.isahab.ir/summarize/v1/summarize"
+#     TIMEOUT = 30
+
+#     @classmethod
+#     def summarize(cls, text: str) -> str:
+#         if not text or len(text.strip()) < 20:
+#             return ""
+
+#         payload = {
+#             "input": text
+#         }
+
+#         headers = {
+#             "Content-Type": "application/json",
+#             "gateway-token": os.getenv("SUMMARY_API_TOKEN"),
+#         }
+
+#         try:
+#             resp = requests.post(
+#                 cls.ENDPOINT,
+#                 json=payload,
+#                 headers=headers,
+#                 timeout=cls.TIMEOUT,
+#             )
+#             resp.raise_for_status()
+
+#             data = resp.json()
+#             return (data.get("data") or "").strip()
+
+#         except Exception as e:
+#             logger.error(f"[SUMMARY ERROR] {e}", exc_info=True)
+#             return ""
+
+
+
+class SummaryService:
+    BASE_URL = os.getenv(
+        "METIS_OPENAI_BASE_URL",
+        "https://api.metisai.ir/openai/v1"
+    )
+    MODEL = os.getenv("SUMMARY_MODEL", "gpt-4.1-nano")
+    TIMEOUT = 60
+
+    @classmethod
+    def summarize(cls, text: str) -> str:
+        if not text or len(text.strip()) < 50:
+            return ""
+
+        url = f"{cls.BASE_URL}/chat/completions"
+
+        payload = {
+            "model": cls.MODEL,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "این متن خروجی تبدیل گفتار به نوشتار (STT) است و ممکن است "
+                        "شامل تکرار، خطاهای گفتاری و جملات ناقص باشد. "
+                        "لطفاً مفهوم اصلی، موضوعات کلیدی و پیام کلی سخنران را "
+                        "به‌صورت یک خلاصه‌ی روان و منسجم به زبان فارسی استخراج کن."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": text
+                }
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {os.getenv('METIS_API_KEY')}",
+        }
+
+        try:
+            resp = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=cls.TIMEOUT
+            )
+            resp.raise_for_status()
+
+            data = resp.json()
+
+            return (
+                data["choices"][0]["message"]["content"].strip()
+                if data.get("choices")
+                else ""
+            )
+
+        except Exception as e:
+            logger.error(f"[SUMMARY ERROR] {e}", exc_info=True)
+            return ""
