@@ -6,6 +6,7 @@ import os
 import subprocess
 import uuid
 import tempfile
+import shutil
 from django.conf import settings
 from django.contrib.sites.models import Site
 from urllib.parse import urlparse
@@ -326,7 +327,10 @@ class ViraService:
 
 
 
-FFMPEG_PATH = r"C:\Users\mahan\AppData\Local\Microsoft\WinGet\Links\ffmpeg.exe"
+FFMPEG_PATH = shutil.which("ffmpeg")
+
+if not FFMPEG_PATH:
+    raise RuntimeError("ffmpeg not found on system PATH")
 
 class MediaService:
     @staticmethod
