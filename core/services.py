@@ -261,10 +261,8 @@ class ViraService:
         }
 
         filename = os.path.basename(file_path)
-
-        # ✅ چون کل سیستم تو WAV 16kHz mono می‌دهد
         mime_type = "audio/wav"
-        model_type = "telephony"   # ✅ فیکس اصلی Vira
+        model_type = "telephony"   
 
         data = {
             "model": model_type,
@@ -278,7 +276,6 @@ class ViraService:
         }
 
         try:
-            # ✅ فایل فقط داخل context باز می‌شود
             with open(file_path, "rb") as f:
                 files = {
                     "audio": (filename, f, mime_type)
@@ -369,7 +366,7 @@ class MediaService:
     @staticmethod
     def smart_split_audio(
         input_path: str,
-        max_chunk_sec: int = 480,   # 8 دقیقه
+        max_chunk_sec: int = 480,   
         min_chunk_sec: int = 60,
         silence_db: int = -35,
         silence_dur: float = 0.6
@@ -434,11 +431,9 @@ class MediaService:
 
         tail_len = total_duration - start
 
-        # ✅ فقط اگر chunk آخر واقعاً صدا دارد
         if tail_len >= min_chunk_sec:
             cuts.append((start, None))
         else:
-            # ✅ اگر خیلی کوتاه است، به chunk قبلی merge شود
             if cuts:
                 prev_start, _ = cuts[-1]
                 cuts[-1] = (prev_start, None)

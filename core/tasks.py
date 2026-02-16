@@ -143,7 +143,7 @@ def process_audio_file(self, file_id):
         duration = get_audio_duration(file_path)
 
         MAX_CHUNK_SECONDS = {
-            AudioFile.ModelChoices.VIRA: 300,   # ✅ 5 دقیقه
+            AudioFile.ModelChoices.VIRA: 300,   
             AudioFile.ModelChoices.EBOO: 480,
             AudioFile.ModelChoices.SCRIBE: 600,
         }
@@ -166,7 +166,7 @@ def process_audio_file(self, file_id):
             
             
         # ---------------------------------------------------------
-        # 4.6 Validate chunks (CRITICAL FIX ✅)
+        # 4.6 Validate chunks 
         # ---------------------------------------------------------
         valid_chunks = []
 
@@ -177,7 +177,6 @@ def process_audio_file(self, file_id):
 
             dur = get_audio_duration(c)
 
-            # ✅ کمتر از ۱ ثانیه = chunk خراب
             if dur < 1.0:
                 logger.warning(f"[CHUNK DROP] empty/short chunk: {c} ({dur}s)")
                 try:
@@ -241,7 +240,7 @@ def process_audio_file(self, file_id):
 
 
         # ---------------------------------------------------------
-        # 6. Validate final aggregated result ✅
+        # 6. Validate final aggregated result 
         # ---------------------------------------------------------
         if not texts:
             logger.error("[SERVICE ERROR] No valid text extracted from any chunk")
@@ -266,7 +265,7 @@ def process_audio_file(self, file_id):
         audio_file.save()
         
         # -----------------------------------------
-        # 8. Summarize final text (NEW ✅)
+        # 8. Summarize final text
         # -----------------------------------------
         try:
             logger.info(f"[SUMMARY] Starting summary for file_id={file_id}")
@@ -320,7 +319,7 @@ def process_audio_file(self, file_id):
                 logger.warning("[CLEANUP] Failed to delete temp file", exc_info=True)
                 
         # ---------------------------------------------------------
-        # A.5 Cleanup audio chunks (NEW ✅)
+        # A.5 Cleanup audio chunks
         # ---------------------------------------------------------
         if 'chunks' in locals() and len(chunks) > 1:
             for c in chunks:
@@ -447,9 +446,8 @@ def discover_link(self, batch_id):
             'quiet': True,
             'no_warnings': True,
             'ignoreerrors': True,
-            'extract_flat': 'in_playlist', # فقط لیست را بگیر، دانلود نکن
+            'extract_flat': 'in_playlist', 
             'skip_download': True,
-            # شبیه‌سازی مرورگر برای عبور از فیلترهای ساده
             'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         }
 
@@ -458,11 +456,9 @@ def discover_link(self, batch_id):
             info = ydl.extract_info(batch.source_url, download=False)
             
             if info:
-                # اگر لینک پلی‌لیست بود
                 if 'entries' in info:
                     entries = info['entries']
                 else:
-                    # اگر تک فایل بود
                     entries = [info]
 
                 for entry in entries:
@@ -486,7 +482,6 @@ def discover_link(self, batch_id):
 
     except Exception as e:
         logger.warning(f"[DISCOVER] yt-dlp failed or found nothing: {e}")
-        # ادامه می‌دهیم به روش دوم...
 
     # =========================================================
     # STRATEGY 2: BeautifulSoup (Fallback for Direct Links)
@@ -497,25 +492,19 @@ def discover_link(self, batch_id):
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
             }
-            # verify=False برای سایت‌های دولتی ایران که SSL مشکل‌دار دارند ضروری است
             resp = requests.get(batch.source_url, headers=headers, timeout=20, verify=False)
             resp.raise_for_status()
             
             soup = BeautifulSoup(resp.text, "html.parser")
             
-            # لیست کامل‌تری از فرمت‌ها
             AUDIO_EXT = (".mp3", ".wav", ".ogg", ".m4a", ".wma", ".aac", ".flac")
             VIDEO_EXT = (".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".flv", ".3gp", ".m3u8")
 
-            # جستجوی تگ‌های مختلف
             for tag in soup.find_all(["audio", "video", "source", "a", "iframe"]):
                 src = None
                 
-                # 1. تگ‌های استاندارد مدیا
                 if tag.name in ("audio", "video", "source"):
-                    src = tag.get("src")
-                
-                # 2. لینک‌های مستقیم دانلودی
+                    src = tag.get("src")               
                 elif tag.name == "a":
                     href = tag.get("href", "")
                     if href and href.lower().endswith(AUDIO_EXT + VIDEO_EXT):
@@ -524,14 +513,11 @@ def discover_link(self, batch_id):
                 if not src:
                     continue
 
-                # نرمال‌سازی لینک
                 file_url = urljoin(batch.source_url, src)
                 
-                # فیلتر کردن بر اساس پسوند (فقط برای تگ <a> ضروری است، اما برای همه چک می‌کنیم)
                 path = urlparse(file_url).path
                 ext = os.path.splitext(path)[1].lower()
                 
-                # اگر تگ source/audio/video بود حتی بدون پسوند هم قبول می‌کنیم
                 is_explicit_media_tag = tag.name in ("audio", "video", "source")
                 has_valid_ext = ext in (AUDIO_EXT + VIDEO_EXT)
 
@@ -558,18 +544,18 @@ def discover_link(self, batch_id):
     for item in found_items:
         url = item['url']
         
-        # جلوگیری از تکراری شدن در یک بچ
+
         if url in unique_urls:
             continue
         unique_urls.add(url)
         
-        # جلوگیری از تکراری شدن در دیتابیس (اختیاری)
+
         if ImportItem.objects.filter(batch=batch, source_url=url).exists():
             continue
 
         ImportItem.objects.create(
             batch=batch,
-            title=item['title'][:250], # محدود کردن طول تایتل
+            title=item['title'][:250], 
             source_url=url,
             is_video=item['is_video']
         )
